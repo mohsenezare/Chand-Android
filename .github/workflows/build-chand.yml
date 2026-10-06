@@ -73,6 +73,96 @@ jobs:
         run: |
           set -euxo pipefail
           grep -nE 'originLabel|DataOrigin\.LIVE|item\.origin|item\.source|MarketFormatting|Text\(' source/app/src/main/java/ir/personal/chand/MainActivity.kt | sed -n '1,220p'
+      - name: Apply final v4.0 UI/live fixes
+        shell: bash
+        run: |
+          set -euxo pipefail
+          python3 - <<'PY'
+          from pathlib import Path
+          p=Path("source/app/src/main/java/ir/personal/chand/MainActivity.kt")
+          s=p.read_text()
+          if 'import androidx.compose.foundation.lazy.grid.GridItemSpan' not in s:
+              s=s.replace('import androidx.compose.foundation.lazy.grid.GridCells\\n','import androidx.compose.foundation.lazy.grid.GridCells\\nimport androidx.compose.foundation.lazy.grid.GridItemSpan\\n')
+          start=s.index('@Composable\\nprivate fun MarketGrid(')
+          end=s.index('@Composable\\nprivate fun MarketCard(', start)
+          new='''@Composable
+private fun MarketGrid(
+    items: List<MarketItem>,
+    gridMode: Boolean,
+    onItemClick: (MarketItem) -> Unit
+) {
+    val gridState = rememberLazyGridState()
+    val columns = if (gridMode) 2 else 1
+    val sections = listOf(
+        "بازار" to items.filter { it.source == ir.personal.chand.data.MarketSource.TGJU },
+        "بورس" to items.filter { it.source == ir.personal.chand.data.MarketSource.TSETMC },
+        "بازار جهانی" to items.filter { it.source == ir.personal.chand.data.MarketSource.TRADINGVIEW }
+    )
+    LazyVerticalGrid(
+        columns = GridCells.Fixed(columns),
+        state = gridState,
+        contentPadding = PaddingValues(start = 14.dp, end = 14.dp, top = 4.dp, bottom = 10.dp),
+        horizontalArrangement = Arrangement.spacedBy(10.dp),
+        verticalArrangement = Arrangement.spacedBy(8.dp),
+        modifier = Modifier.fillMaxSize()
+    ) {
+        sections.forEach { (title, sectionItems) ->
+            item(span = { GridItemSpan(columns) }) {
+                Text(
+                    text = title,
+                    color = MaterialTheme.colorScheme.onBackground,
+                    fontSize = 17.sp,
+                    fontWeight = FontWeight.Bold,
+                    modifier = Modifier.padding(top = 10.dp, bottom = 2.dp)
+                )
+            }
+            if (sectionItems.isEmpty()) {
+                item(span = { GridItemSpan(columns) }) {
+                    Text(
+                        text = "موردی برای نمایش نیست",
+                        color = ChandMuted,
+                        fontSize = 12.sp,
+                        modifier = Modifier.padding(bottom = 4.dp)
+                    )
+                }
+            } else {
+                items(sectionItems, key = MarketItem::id) { item ->
+                    MarketCard(
+                        item = item,
+                        gridMode = gridMode,
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .aspectRatio(if (gridMode) 1.12f else 2.25f),
+                        onClick = { onItemClick(item) }
+                    )
+                }
+            }
+        }
+    }
+}
+
+'''
+          s=s[:start]+new+s[end:]
+          old='MarketBadge(item, Modifier.size(if (compact) 45.dp else 54.dp))'
+          repl='''Box(modifier = Modifier.size(if (compact) 45.dp else 54.dp)) {
+                            MarketBadge(item, Modifier.fillMaxSize())
+                            if (item.origin == DataOrigin.LIVE) {
+                                Surface(
+                                    color = Color(0xFF245B43),
+                                    shape = RoundedCornerShape(6.dp),
+                                    modifier = Modifier.align(Alignment.TopEnd)
+                                ) { Text("LIVE", color = Color.White, fontSize = 7.sp, fontWeight = FontWeight.Bold, modifier = Modifier.padding(horizontal = 4.dp, vertical = 2.dp)) }
+                            }
+                        }'''
+          if old in s:
+              s=s.replace(old,repl,1)
+          p.write_text(s)
+
+          vm=Path("source/app/src/main/java/ir/personal/chand/MainViewModel.kt")
+          v=vm.read_text()
+          v=v.replace('const val LIVE_RECONCILE_INTERVAL_MS = 30_000L','const val LIVE_RECONCILE_INTERVAL_MS = 5_000L')
+          vm.write_text(v)
+          PY
       - name: Build debug APK
         working-directory: source
         run: ./gradlew --no-daemon --stacktrace testDebugUnitTest assembleDebug
