@@ -125,3 +125,5 @@ jobs:
             out/Chand-v4.0-live-architecture-debug.apk
             out/SHA256.txt
           if-no-files-found: error
+
+# Rebuild verified v4.0 APK
