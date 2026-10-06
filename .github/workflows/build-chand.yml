@@ -1,0 +1,67 @@
+name: Build Chand APK
+
+on:
+  push:
+    branches: [ main ]
+    paths:
+      - 'payload/**'
+      - '.github/workflows/build-chand.yml'
+  workflow_dispatch:
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Set up JDK 17
+        uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: '17'
+
+      - name: Reconstruct source archive
+        shell: bash
+        run: |
+          set -euxo pipefail
+          mkdir -p reconstructed
+          cat payload/v33.part.0 payload/v33.part.1 payload/v33.part.2 payload/v33.part.3 > reconstructed/source.b64
+          base64 --decode reconstructed/source.b64 > reconstructed/Chand-v3.3-Reviewed-Source.zip
+          unzip -t reconstructed/Chand-v3.3-Reviewed-Source.zip
+          mkdir -p source
+          unzip -q reconstructed/Chand-v3.3-Reviewed-Source.zip -d source
+          chmod +x source/gradlew
+
+      - name: Validate Gradle wrapper
+        uses: gradle/actions/wrapper-validation@v4
+        with:
+          min-wrapper-count: 1
+
+      - name: Set up Gradle
+        uses: gradle/actions/setup-gradle@v4
+
+      - name: Build debug APK
+        working-directory: source
+        run: ./gradlew --no-daemon --stacktrace assembleDebug
+
+      - name: Collect APK
+        shell: bash
+        run: |
+          set -euxo pipefail
+          mkdir -p out
+          APK=$(find source/app/build/outputs/apk/debug -name '*.apk' -type f | head -n 1)
+          test -n "$APK"
+          cp "$APK" out/Chand-v3.3-debug.apk
+          sha256sum out/Chand-v3.3-debug.apk | tee out/SHA256.txt
+
+      - name: Upload APK artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: Chand-v3.3-APK
+          path: |
+            out/Chand-v3.3-debug.apk
+            out/SHA256.txt
+          if-no-files-found: error
