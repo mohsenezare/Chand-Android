@@ -5,6 +5,7 @@ on:
     branches: [ main ]
     paths:
       - 'payload/**'
+      - 'build_support/**'
       - '.github/workflows/build-chand.yml'
   workflow_dispatch:
 
