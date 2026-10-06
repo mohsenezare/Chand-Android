@@ -1,3 +1,3 @@
 # Chand Android
 
-Chand v3.7 — live TGJU + TradingView streams, persistent last-trade fallback, and user-controlled homepage order.
+v4.0 live architecture: TSETMC (Iran stocks), TGJU websocket (domestic markets), TradingView websocket (global markets), persistent real last-trade fallback, stable user order.
