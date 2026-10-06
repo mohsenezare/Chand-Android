@@ -1,4 +1,4 @@
-name: Probe Stock Catalog
+name: Probe Stock Pagination
 on:
   push:
     branches: [ probe-stock-catalog ]
@@ -6,32 +6,22 @@ jobs:
   probe:
     runs-on: ubuntu-latest
     steps:
-      - name: Inspect TGJU stock catalog
+      - name: Inspect TGJU stock pagination
         shell: bash
         run: |
           python3 - <<'PY'
-          import re, json, urllib.parse, urllib.request
+          import re, urllib.request, hashlib
           ua={'User-Agent':'Mozilla/5.0 (Linux; Android 14)'}
-          for path in ['stock','warrant','fund','bond','option']:
+          for suffix in ['', '?page=2','?page=3','?p=2','?offset=100','?start=100','?limit=500','?page=2&limit=100']:
+              url='https://www.tgju.org/markets/stock'+suffix
               try:
-                  req=urllib.request.Request('https://www.tgju.org/markets/'+path,headers=ua)
+                  req=urllib.request.Request(url,headers=ua)
                   s=urllib.request.urlopen(req,timeout=30).read().decode('utf-8','ignore')
-                  syms=set(re.findall(r'data-symbol=["\']([^"\']+)["\']',s))
-                  print('HTML',path,'bytes',len(s),'symbols',len(syms),'sample',sorted(syms)[:12])
+                  syms=re.findall(r'data-symbol=["\']([^"\']+)["\']',s)
+                  print('URL',suffix or 'base','count',len(set(syms)),'first',syms[:6],'last',syms[-6:],'md5',hashlib.md5('|'.join(syms).encode()).hexdigest())
+                  if suffix=='':
+                      hints=re.findall(r'href="([^"]+)"',s)
+                      print('HINTS',[h for h in hints if 'page' in h.lower() or 'offset' in h.lower() or 'limit' in h.lower()][:50])
               except Exception as e:
-                  print('HTML_ERR',path,e)
-          for q in ['', 'فولاد', 'بانک', 'خودرو']:
-              print('QUERY',repr(q))
-              for page in range(1,11):
-                  url='https://api.tgju.org/v1/newsearch?module=markets.internal&page='+str(page)
-                  if q: url+='&q='+urllib.parse.quote(q)
-                  try:
-                      req=urllib.request.Request(url,headers=ua)
-                      data=json.load(urllib.request.urlopen(req,timeout=20))
-                  except Exception as e:
-                      print('ERR',page,e); break
-                  items=data.get('list') or []
-                  stocks=[x for x in items if 'internal.stocks' in str(x.get('type','')).lower()]
-                  print('page',page,'items',len(items),'stocks',len(stocks),'last',data.get('last'),'sample',[x.get('grade') or x.get('s1') for x in stocks[:8]])
-                  if data.get('last'): break
+                  print('ERR',suffix,e)
           PY
