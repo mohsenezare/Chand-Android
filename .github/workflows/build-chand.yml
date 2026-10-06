@@ -28,7 +28,7 @@ jobs:
         run: |
           set -euxo pipefail
           mkdir -p reconstructed
-          cat payload/v33.part.0 payload/v33.part.1 payload/v33.part.2 payload/v33.part.3 > reconstructed/source.b64
+          cat payload/v33.part.0 payload/v33.part.1 payload/v33.part.2 payload/v33.part.3 payload/v33.part.4 > reconstructed/source.b64
           base64 --decode reconstructed/source.b64 > reconstructed/Chand-v4.0-Live-Architecture-Source.zip
           unzip -t reconstructed/Chand-v4.0-Live-Architecture-Source.zip
           mkdir -p source
