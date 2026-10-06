@@ -56,11 +56,11 @@ jobs:
         shell: bash
         run: |
           set -euxo pipefail
-          sed -n '120,430p' source/app/src/main/java/ir/personal/chand/MainActivity.kt
-          echo "=== VM ==="
-          sed -n '180,430p' source/app/src/main/java/ir/personal/chand/MainViewModel.kt
-          echo "=== TV ==="
-          sed -n '1,230p' source/app/src/main/java/ir/personal/chand/data/TradingViewStreamClient.kt
+          echo "=== MAIN 145-185 ==="; sed -n '145,185p' source/app/src/main/java/ir/personal/chand/MainActivity.kt
+          echo "=== GRID 280-390 ==="; sed -n '280,390p' source/app/src/main/java/ir/personal/chand/MainActivity.kt
+          echo "=== BADGE 390-460 ==="; sed -n '390,460p' source/app/src/main/java/ir/personal/chand/MainActivity.kt
+          echo "=== VM 210-285 ==="; sed -n '210,285p' source/app/src/main/java/ir/personal/chand/MainViewModel.kt
+          echo "=== TV 50-190 ==="; sed -n '50,190p' source/app/src/main/java/ir/personal/chand/data/TradingViewStreamClient.kt
       - name: Build debug APK
         working-directory: source
         run: ./gradlew --no-daemon --stacktrace testDebugUnitTest assembleDebug
