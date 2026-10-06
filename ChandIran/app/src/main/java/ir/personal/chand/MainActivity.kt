@@ -25,6 +25,20 @@ import org.json.*
 import java.text.NumberFormat
 import java.util.Locale
 
+
+fun defaultMarkets():List<MarketItem> = listOf(
+    MarketItem("usd","USD","دلار آمریکا",MarketGroup.CURRENCY),
+    MarketItem("eur","EUR","یورو",MarketGroup.CURRENCY),
+    MarketItem("gold18","طلای ۱۸","طلای ۱۸ عیار",MarketGroup.GOLD),
+    MarketItem("coin","سکه","سکه امامی",MarketGroup.GOLD),
+    MarketItem("btc","BTC","بیت‌کوین",MarketGroup.CRYPTO),
+    MarketItem("index","شاخص کل","شاخص کل بورس",MarketGroup.INDEX),
+    MarketItem("khodro","خودرو","ایران خودرو",MarketGroup.STOCK),
+    MarketItem("khsa","خساپا","سایپا",MarketGroup.STOCK),
+    MarketItem("foolad","فولاد","فولاد مبارکه",MarketGroup.STOCK),
+    MarketItem("femeli","فملی","ملی صنایع مس ایران",MarketGroup.STOCK)
+)
+
 class MainActivity:ComponentActivity(){
     override fun onCreate(state:Bundle?){
         super.onCreate(state)
@@ -139,9 +153,9 @@ fun ChandApp(){
                 if(store.loading)LinearProgressIndicator(Modifier.fillMaxWidth())
                 val shown=store.items.filter{(!favorites||it.favorite)&&(search.isBlank()||it.symbol.contains(search,true)||it.title.contains(search,true))}
                 if(grid)LazyVerticalGrid(GridCells.Adaptive(155.dp),verticalArrangement=Arrangement.spacedBy(10.dp),horizontalArrangement=Arrangement.spacedBy(10.dp),contentPadding=PaddingValues(bottom=24.dp)){
-                    items(shown,key={it.id}){m->item{MarketCard(m){selected=m}}}
+                    items(items=shown,key={m -> m.id}) { m -> MarketCard(m){selected=m} }
                 }else LazyColumn(verticalArrangement=Arrangement.spacedBy(8.dp),contentPadding=PaddingValues(bottom=24.dp)){
-                    items(shown,key={it.id}){m->item{MarketRow(m){selected=m}}}
+                    items(items=shown,key={m -> m.id}) { m -> MarketRow(m){selected=m} }
                 }
             }
         }
