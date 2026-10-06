@@ -43,6 +43,15 @@ jobs:
       - name: Set up Gradle
         uses: gradle/actions/setup-gradle@v4
 
+      - name: Inspect reconstructed source
+        shell: bash
+        run: |
+          set -euxo pipefail
+          echo "=== SOURCE FILES ==="
+          find source -type f | sort | head -200
+          echo "=== UI TERMS ==="
+          grep -RniE 'بازار جهانی|بازار|LIVE|MarketGrid|MarketBadge|TradingView|startTradingViewLiveStream|MarketStreamClient' source --include='*.kt' --include='*.xml' | head -300 || true
+
       - name: Build debug APK
         working-directory: source
         run: ./gradlew --no-daemon --stacktrace testDebugUnitTest assembleDebug
