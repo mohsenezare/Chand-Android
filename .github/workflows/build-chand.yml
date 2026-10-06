@@ -68,6 +68,11 @@ jobs:
           sed -n '420,560p' source/app/src/main/java/ir/personal/chand/MainActivity.kt
           echo "=== imports ==="; sed -n '1,120p' source/app/src/main/java/ir/personal/chand/MainActivity.kt
           echo "=== vm tail ==="; sed -n '285,380p' source/app/src/main/java/ir/personal/chand/MainViewModel.kt
+      - name: Inspect status UI
+        shell: bash
+        run: |
+          set -euxo pipefail
+          grep -nE 'originLabel|DataOrigin\.LIVE|item\.origin|item\.source|MarketFormatting|Text\(' source/app/src/main/java/ir/personal/chand/MainActivity.kt | sed -n '1,220p'
       - name: Build debug APK
         working-directory: source
         run: ./gradlew --no-daemon --stacktrace testDebugUnitTest assembleDebug
