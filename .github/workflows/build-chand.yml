@@ -88,7 +88,7 @@ jobs:
               session="qs_chand_probe"
               ws.send(frame({"m":"set_auth_token","p":["unauthorized_user_token"]}))
               ws.send(frame({"m":"quote_create_session","p":[session]}))
-              ws.send(frame({"m":"quote_set_fields","p":[session,"lp","lp_time","ch","chp","trade_time","rtc"]}))
+              ws.send(frame({"m":"quote_set_fields","p":[session,"lp","lp_time","ch","chp","rchp","rtc","volume","status","update_mode","is_tradable","current_session","exchange","currency_code"]}))
               ws.send(frame({"m":"quote_add_symbols","p":[session,"BITSTAMP:BTCUSD",{"flags":["force_permission"]}]}))
               ws.send(frame({"m":"quote_fast_symbols","p":[session,"BITSTAMP:BTCUSD"]}))
               deadline=time.time()+20
