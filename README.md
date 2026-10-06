@@ -1,3 +1,3 @@
 # Chand Android
 
-v3.6: TGJU full stock pagination/search + event-driven live WebSocket updates + last valid price fallback.
+Chand v3.7 — live TGJU + TradingView streams, persistent last-trade fallback, and user-controlled homepage order.
