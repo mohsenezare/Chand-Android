@@ -52,6 +52,15 @@ jobs:
           echo "=== UI TERMS ==="
           grep -RniE 'بازار جهانی|بازار|LIVE|MarketGrid|MarketBadge|TradingView|startTradingViewLiveStream|MarketStreamClient' source --include='*.kt' --include='*.xml' | head -300 || true
 
+      - name: Inspect UI source ranges
+        shell: bash
+        run: |
+          set -euxo pipefail
+          sed -n '120,430p' source/app/src/main/java/ir/personal/chand/MainActivity.kt
+          echo "=== VM ==="
+          sed -n '180,430p' source/app/src/main/java/ir/personal/chand/MainViewModel.kt
+          echo "=== TV ==="
+          sed -n '1,230p' source/app/src/main/java/ir/personal/chand/data/TradingViewStreamClient.kt
       - name: Build debug APK
         working-directory: source
         run: ./gradlew --no-daemon --stacktrace testDebugUnitTest assembleDebug
