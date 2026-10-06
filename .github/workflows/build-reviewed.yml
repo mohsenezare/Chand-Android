@@ -29,6 +29,9 @@ jobs:
           unzip -q source.zip -d source
           chmod +x source/gradlew
       - uses: android-actions/setup-android@v3
+        with:
+          packages: platform-tools
+          log-accepted-android-sdk-licenses: false
       - name: Install Android build tools
         run: sdkmanager "platforms;android-35" "build-tools;35.0.0"
       - name: Test, build and lint
