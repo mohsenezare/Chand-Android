@@ -54,14 +54,14 @@ jobs:
           mkdir -p out
           APK=$(find source/app/build/outputs/apk/debug -name '*.apk' -type f | head -n 1)
           test -n "$APK"
-          cp "$APK" out/Chand-v3.5-stocks-tgju-debug.apk
-          sha256sum out/Chand-v3.5-stocks-tgju-debug.apk | tee out/SHA256.txt
+          cp "$APK" out/Chand-v3.6-stocks-live-debug.apk
+          sha256sum out/Chand-v3.6-stocks-live-debug.apk | tee out/SHA256.txt
 
       - name: Upload APK artifact
         uses: actions/upload-artifact@v4
         with:
-          name: Chand-v3.5-Stocks-TGJU-APK
+          name: Chand-v3.6-Stocks-Live-APK
           path: |
-            out/Chand-v3.5-stocks-tgju-debug.apk
+            out/Chand-v3.6-stocks-live-debug.apk
             out/SHA256.txt
           if-no-files-found: error
