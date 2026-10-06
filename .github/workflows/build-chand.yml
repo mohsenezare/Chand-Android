@@ -84,7 +84,7 @@ jobs:
               p=json.dumps(obj,separators=(",",":"))
               return f"~m~{len(p.encode())}~m~{p}"
           try:
-              ws=websocket.create_connection("wss://data.tradingview.com/socket.io/websocket?from=chand",origin="https://www.tradingview.com",timeout=10)
+              ws=websocket.create_connection("wss://data.tradingview.com/socket.io/websocket",origin="https://data.tradingview.com",timeout=10)
               session="qs_chand_probe"
               ws.send(frame({"m":"set_auth_token","p":["unauthorized_user_token"]}))
               ws.send(frame({"m":"quote_create_session","p":[session]}))

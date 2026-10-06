@@ -1,3 +1,3 @@
 # Chand Android
 
-v4.0 provider architecture build workspace.
+v4.0 live architecture — TSETMC / TGJU / TradingView.
