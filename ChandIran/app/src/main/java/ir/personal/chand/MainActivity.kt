@@ -139,9 +139,9 @@ fun ChandApp(){
                 if(store.loading)LinearProgressIndicator(Modifier.fillMaxWidth())
                 val shown=store.items.filter{(!favorites||it.favorite)&&(search.isBlank()||it.symbol.contains(search,true)||it.title.contains(search,true))}
                 if(grid)LazyVerticalGrid(GridCells.Adaptive(155.dp),verticalArrangement=Arrangement.spacedBy(10.dp),horizontalArrangement=Arrangement.spacedBy(10.dp),contentPadding=PaddingValues(bottom=24.dp)){
-                    items(shown,key={it.id}){item{MarketCard(item){selected=item}}}
+                    items(shown,key={it.id}){m->item{MarketCard(m){selected=m}}}
                 }else LazyColumn(verticalArrangement=Arrangement.spacedBy(8.dp),contentPadding=PaddingValues(bottom=24.dp)){
-                    items(shown,key={it.id}){item{MarketRow(item){selected=item}}}
+                    items(shown,key={it.id}){m->item{MarketRow(m){selected=m}}}
                 }
             }
         }
