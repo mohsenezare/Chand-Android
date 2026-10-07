@@ -1763,25 +1763,29 @@ if "maxLines = 1," not in name_tail[:900]:
     )
     card = card[:name_pos] + name_tail
 
-# Replace the card's generic badge only; do not touch detail-page badges.
-# Match whatever v4.8 card size survived the earlier compatibility patch.
-if "MarketBadge(item," not in card:
-    raise SystemExit("v4.8.4 card badge anchor not found")
-card = card.replace("MarketBadge(item,", "SymbolLogoBadge(item,", 1)
-
+# Keep the card geometry untouched; only the one-line title behavior changes here.
 u = u[:card_start] + card + u[trend_start:]
 
-# Add logo resolver immediately before the existing MarketBadge implementation.
+# Upgrade the existing MarketBadge renderer itself so every card gets its
+# per-symbol logo regardless of the exact v4.8 call-site formatting.
 badge_fn = "@Composable\nprivate fun MarketBadge("
 badge_pos = u.find(badge_fn)
 if badge_pos < 0:
     raise SystemExit("v4.8.4 MarketBadge function not found")
 
+# Preserve the original hand-drawn badge as a fallback.
+u = u[:badge_pos] + u[badge_pos:].replace(
+    "@Composable\nprivate fun MarketBadge(",
+    "@Composable\nprivate fun LegacyMarketBadge(",
+    1
+)
+badge_pos = u.find("@Composable\nprivate fun LegacyMarketBadge(")
+
 logo_helpers = r'''
 private val SymbolLogoUrlCache = ConcurrentHashMap<String, String>()
 
 @Composable
-private fun SymbolLogoBadge(
+private fun MarketBadge(
     item: MarketItem,
     modifier: Modifier = Modifier
 ) {
@@ -1839,7 +1843,7 @@ private fun SymbolSpecificFallbackBadge(
         )
 
     if (knownAsset) {
-        MarketBadge(item, modifier)
+        LegacyMarketBadge(item, modifier)
         return
     }
 
