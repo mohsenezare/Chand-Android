@@ -1324,3 +1324,81 @@ g = re.sub(
     count=1
 )
 gradle.write_text(g)
+
+
+# ---------------- v4.9 adaptive symbol-name typography ----------------
+# Make the displayed market/symbol name scale smoothly by character count:
+# short names get more visual weight, long names shrink only as much as needed.
+ui = root / "MainActivity.kt"
+u = ui.read_text()
+
+old_name_logic = """            val longName = item.name.length > if (compact) 11 else 16
+            val nameFontSize = when {
+                compact && longName -> 13.sp
+                compact -> 15.sp
+                longName -> 17.sp
+                else -> 20.sp
+            }
+"""
+new_name_logic = """            val nameLength = item.name.trim().length
+            val nameFontSize = when {
+                compact && nameLength <= 5 -> 19.sp
+                compact && nameLength <= 8 -> 18.sp
+                compact && nameLength <= 12 -> 16.sp
+                compact && nameLength <= 17 -> 14.sp
+                compact -> 13.sp
+                nameLength <= 5 -> 25.sp
+                nameLength <= 9 -> 23.sp
+                nameLength <= 14 -> 21.sp
+                nameLength <= 20 -> 18.sp
+                else -> 16.sp
+            }
+            val nameLineHeight = when {
+                compact && nameLength <= 8 -> 21.sp
+                compact && nameLength <= 12 -> 19.sp
+                compact -> 17.sp
+                nameLength <= 9 -> 27.sp
+                nameLength <= 14 -> 24.sp
+                nameLength <= 20 -> 21.sp
+                else -> 19.sp
+            }
+            val codeLength = item.code.trim().length
+            val codeFontSize = when {
+                compact && codeLength <= 5 -> 13.sp
+                compact && codeLength <= 8 -> 12.sp
+                compact -> 11.sp
+                codeLength <= 5 -> 15.sp
+                codeLength <= 8 -> 14.sp
+                else -> 13.sp
+            }
+"""
+if old_name_logic not in u:
+    raise SystemExit("v4.9 adaptive name anchor not found")
+u = u.replace(old_name_logic, new_name_logic, 1)
+
+u = u.replace(
+    "lineHeight = if (compact) 16.sp else 20.sp,",
+    "lineHeight = nameLineHeight,",
+    1
+)
+u = u.replace(
+    "fontSize = if (compact) 11.sp else 13.sp,",
+    "fontSize = codeFontSize,",
+    1
+)
+
+ui.write_text(u)
+
+gradle = Path("source/app/build.gradle.kts")
+g = gradle.read_text()
+m = re.search(r"versionCode\s*=\s*(\d+)", g)
+if m:
+    next_code = max(int(m.group(1)) + 1, 21)
+    g = re.sub(r"versionCode\s*=\s*\d+", f"versionCode = {next_code}", g, count=1)
+g = re.sub(
+    r'versionName\s*=\s*"[^"]+"',
+    'versionName = "4.9-adaptive-symbol-font"',
+    g,
+    count=1
+)
+gradle.write_text(g)
