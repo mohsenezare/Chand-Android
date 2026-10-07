@@ -2085,3 +2085,56 @@ g = re.sub(
     count=1
 )
 gradle.write_text(g)
+
+
+# ---------------- final circular-logo + larger-name polish ----------------
+# Requested final UI-only polish:
+# - every downloaded symbol/company logo is clipped to a circle
+# - the market/symbol name in each card is slightly larger
+# No pricing, feeds, card dimensions, or other behavior is changed.
+
+ui = root / "MainActivity.kt"
+z = ui.read_text()
+
+card_start = z.find("@Composable\nprivate fun MarketCard(")
+trend_start = z.find("private fun trendColor(", card_start + 1)
+if card_start < 0 or trend_start <= card_start:
+    raise SystemExit("final polish: MarketCard range not found")
+
+card = z[card_start:trend_start]
+name_pos = card.find("text = item.name,")
+if name_pos < 0:
+    raise SystemExit("final polish: item.name not found")
+
+name_tail = card[name_pos:name_pos + 1200]
+name_tail_new = name_tail.replace(
+    "fontSize = if (compact) 16.sp else 20.sp",
+    "fontSize = if (compact) 17.sp else 21.sp",
+    1
+).replace(
+    "lineHeight = if (compact) 19.sp else 23.sp",
+    "lineHeight = if (compact) 20.sp else 24.sp",
+    1
+)
+card = card[:name_pos] + name_tail_new + card[name_pos + len(name_tail):]
+z = z[:card_start] + card + z[trend_start:]
+
+# Clip the dynamically loaded logo itself to a perfect circle.
+z = z.replace(
+    "modifier = modifier,\n        loading = {",
+    "modifier = modifier.clip(CircleShape),\n        loading = {",
+    1
+)
+
+ui.write_text(z)
+
+gradle = Path("source/app/build.gradle.kts")
+g = gradle.read_text()
+g = re.sub(r"versionCode\s*=\s*\d+", "versionCode = 29", g, count=1)
+g = re.sub(
+    r'versionName\s*=\s*"[^"]+"',
+    'versionName = "4.8.5-circular-logos-larger-name"',
+    g,
+    count=1
+)
+gradle.write_text(g)
