@@ -4414,3 +4414,16 @@ if old_modifier in grid and "triggerDistance = 84.dp.toPx()" not in grid:
 
 u = u[:grid_start] + grid + u[card_start:]
 ui_file.write_text(u)
+
+
+# --- FIX pull gesture imports for current Compose version ---
+u = ui_file.read_text()
+u = u.replace(
+    "import androidx.compose.ui.input.pointer.awaitEachGesture\n",
+    "import androidx.compose.foundation.gestures.awaitEachGesture\n"
+)
+u = u.replace(
+    "import androidx.compose.ui.input.pointer.awaitFirstDown\n",
+    "import androidx.compose.foundation.gestures.awaitFirstDown\n"
+)
+ui_file.write_text(u)
