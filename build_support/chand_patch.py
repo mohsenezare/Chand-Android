@@ -2303,24 +2303,9 @@ private var savedGlobalCatalog: List<MarketDescriptor> = loadSavedGlobalCatalog(
         1
     )
 
-init_anchor = """init {
-WidgetUpdater.schedule(application)
-repository.knownDescriptors().forEach { descriptorCache[it.id] = it }
-}
-"""
-if "savedGlobalCatalog.forEach { descriptorCache[it.id] = it }" not in vv:
-    if init_anchor not in vv:
-        raise SystemExit("symbol updater: VM init anchor not found")
-    vv = vv.replace(
-        init_anchor,
-        """init {
-WidgetUpdater.schedule(application)
-repository.knownDescriptors().forEach { descriptorCache[it.id] = it }
-savedGlobalCatalog.forEach { descriptorCache[it.id] = it }
-}
-""",
-        1
-    )
+# Saved globals are merged into loadCatalog below. Selected descriptors are
+# already persisted by the existing rememberSelection path, so startup behavior
+# stays untouched.
 
 catalog_block = """val page = when (source) {
 CatalogSource.MARKETS -> repository.searchMarkets(normalizedQuery, catalogPage)
