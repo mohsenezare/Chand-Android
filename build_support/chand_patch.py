@@ -337,6 +337,11 @@ class TradingViewStreamClient(
         requestedSymbols.forEach { sourceKey ->
             if (resolved.containsKey(sourceKey)) return@forEach
 
+            directInvestingName(sourceKey)?.let { direct ->
+                resolved[sourceKey] = direct
+                return@forEach
+            }
+
             val target = queryFor(sourceKey)
             val preferredExchange = sourceKey.substringBefore(':', "").uppercase(Locale.US)
             val expectedToken = normalize(sourceKey.substringAfterLast(':'))
@@ -391,6 +396,26 @@ class TradingViewStreamClient(
         if (expectedToken == "USOIL" &&
             (description.contains("wti", true) || description.contains("crude oil", true))) score += 80
         return score
+    }
+
+    private fun directInvestingName(sourceKey: String): String? {
+        val token = normalize(sourceKey.substringAfterLast(':'))
+        val direct = when (token) {
+            "BTCUSD" -> ":BTC/USD"
+            "ETHUSD" -> ":ETH/USD"
+            "EURUSD" -> ":EUR/USD"
+            "GBPUSD" -> ":GBP/USD"
+            "USDJPY" -> ":USD/JPY"
+            "XAUUSD" -> ":XAU/USD"
+            "XAGUSD" -> ":XAG/USD"
+            else -> null
+        }
+        if (direct != null) return direct
+
+        val prefix = sourceKey.substringBefore(':', "").uppercase(Locale.US)
+        return if (sourceKey.startsWith(":") ||
+            (sourceKey.contains(':') && prefix !in setOf("BITSTAMP", "FX", "FX_IDC", "OANDA", "FOREXCOM", "TVC"))
+        ) sourceKey else null
     }
 
     private fun queryFor(sourceKey: String): String =
@@ -664,6 +689,11 @@ fetch_replacement = r'''    private suspend fun fetchTradingViewItems(
             investingSymbolCache[descriptor.sourceKey]?.let { return it }
         }
 
+        directInvestingNameForSourceKey(descriptor.sourceKey)?.let { direct ->
+            synchronized(investingSymbolCache) { investingSymbolCache[descriptor.sourceKey] = direct }
+            return direct
+        }
+
         val query = investingQueryFor(descriptor.sourceKey)
         val url = investingEndpoint("search") +
             "?query=" + encode(query) + "&limit=12&type=&exchange="
@@ -710,6 +740,26 @@ fetch_replacement = r'''    private suspend fun fetchTradingViewItems(
         }
         synchronized(investingSymbolCache) { investingSymbolCache[descriptor.sourceKey] = resolved }
         return resolved
+    }
+
+    private fun directInvestingNameForSourceKey(sourceKey: String): String? {
+        val token = normalizeInvestingToken(sourceKey.substringAfterLast(':'))
+        val direct = when (token) {
+            "BTCUSD" -> ":BTC/USD"
+            "ETHUSD" -> ":ETH/USD"
+            "EURUSD" -> ":EUR/USD"
+            "GBPUSD" -> ":GBP/USD"
+            "USDJPY" -> ":USD/JPY"
+            "XAUUSD" -> ":XAU/USD"
+            "XAGUSD" -> ":XAG/USD"
+            else -> null
+        }
+        if (direct != null) return direct
+
+        val prefix = sourceKey.substringBefore(':', "").uppercase(Locale.US)
+        return if (sourceKey.startsWith(":") ||
+            (sourceKey.contains(':') && prefix !in setOf("BITSTAMP", "FX", "FX_IDC", "OANDA", "FOREXCOM", "TVC"))
+        ) sourceKey else null
     }
 
     private fun investingQueryFor(sourceKey: String): String =
