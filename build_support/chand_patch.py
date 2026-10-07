@@ -4427,3 +4427,150 @@ u = u.replace(
     "import androidx.compose.foundation.gestures.awaitFirstDown\n"
 )
 ui_file.write_text(u)
+
+
+# --- FINAL LOCKED anchors: apply light search + actual grid pull gesture ---
+ui_file = root / "MainActivity.kt"
+u = ui_file.read_text()
+
+# A) Actual pull gesture on the existing MarketGrid modifier.
+grid_start = u.find("@Composable\nprivate fun MarketGrid(")
+card_start = u.find("@Composable\nprivate fun MarketCard(", grid_start + 1)
+if grid_start < 0 or card_start <= grid_start:
+    raise SystemExit("final locked: MarketGrid range not found")
+grid = u[grid_start:card_start]
+
+if "triggerDistance = 84.dp.toPx()" not in grid:
+    old = """            .background(
+                if (MaterialTheme.colorScheme.background.luminance() > 0.5f)
+                    Color(0xFFE7E6E3)
+                else
+                    Color.Transparent
+            )
+    ) {"""
+    new = """            .background(
+                if (MaterialTheme.colorScheme.background.luminance() > 0.5f)
+                    Color(0xFFE7E6E3)
+                else
+                    Color.Transparent
+            )
+            .pointerInput(gridState, onPullRefresh) {
+                val triggerDistance = 84.dp.toPx()
+                awaitEachGesture {
+                    awaitFirstDown(requireUnconsumed = false)
+                    var pullDistance = 0f
+                    var fired = false
+
+                    do {
+                        val event = awaitPointerEvent()
+                        val change = event.changes.firstOrNull() ?: break
+
+                        if (!gridState.canScrollBackward && !fired) {
+                            val dy = change.positionChange().y
+                            pullDistance = if (dy > 0f) {
+                                pullDistance + dy
+                            } else {
+                                (pullDistance + dy).coerceAtLeast(0f)
+                            }
+
+                            if (pullDistance >= triggerDistance) {
+                                fired = true
+                                onPullRefresh()
+                            }
+                        } else if (gridState.canScrollBackward) {
+                            pullDistance = 0f
+                        }
+                    } while (event.changes.any { it.pressed })
+                }
+            }
+    ) {"""
+    if old not in grid:
+        raise SystemExit("final locked: MarketGrid modifier anchor not found")
+    grid = grid.replace(old, new, 1)
+
+u = u[:grid_start] + grid + u[card_start:]
+
+# B) Light-mode Manage/Search dialog.
+manage_start = u.find("@Composable\nprivate fun ManageItemsDialog(")
+source_start = u.find("@Composable\nprivate fun SourceButton(", manage_start)
+if manage_start < 0 or source_start <= manage_start:
+    raise SystemExit("final locked: ManageItemsDialog range not found")
+manage = u[manage_start:source_start]
+
+if "val manageLightMode = MaterialTheme.colorScheme.background.luminance() > 0.5f" not in manage:
+    anchor = """) {
+    var query by remember(state.catalogSource) { mutableStateOf(state.catalogQuery) }"""
+    repl = """) {
+    val manageLightMode = MaterialTheme.colorScheme.background.luminance() > 0.5f
+    var query by remember(state.catalogSource) { mutableStateOf(state.catalogQuery) }"""
+    if anchor not in manage:
+        raise SystemExit("final locked: ManageItemsDialog state anchor not found")
+    manage = manage.replace(anchor, repl, 1)
+
+if "containerColor = if (manageLightMode)" not in manage:
+    if "containerColor = ChandCard," not in manage:
+        raise SystemExit("final locked: ManageItemsDialog container anchor not found")
+    manage = manage.replace(
+        "containerColor = ChandCard,",
+        "containerColor = if (manageLightMode) Color(0xFFFDFDFC) else ChandCard,",
+        1
+    )
+
+if "if (manageLightMode) Color(0xFFD9D9DD)" not in manage:
+    manage = manage.replace(
+        "HorizontalDivider(color = Color(0xFF2C2C2E))",
+        """HorizontalDivider(
+                        color = if (manageLightMode) Color(0xFFD9D9DD) else Color(0xFF2C2C2E)
+                    )""",
+        1
+    )
+
+u = u[:manage_start] + manage + u[source_start:]
+
+# C) Source selector palette on that light sheet.
+source_start = u.find("@Composable\nprivate fun SourceButton(")
+source_end = len(u)
+next_composable = u.find("\n@Composable", source_start + 12)
+if next_composable > source_start:
+    source_end = next_composable
+source = u[source_start:source_end]
+
+if "val sourceLightMode = MaterialTheme.colorScheme.background.luminance() > 0.5f" not in source:
+    anchor = """) {
+    Surface("""
+    repl = """) {
+    val sourceLightMode = MaterialTheme.colorScheme.background.luminance() > 0.5f
+    Surface("""
+    if anchor not in source:
+        raise SystemExit("final locked: SourceButton body anchor not found")
+    source = source.replace(anchor, repl, 1)
+
+source = source.replace(
+    "color = if (selected) Color.White else Color(0xFF2C2C2E),",
+    """color = when {
+            selected && sourceLightMode -> Color(0xFF111113)
+            selected -> Color.White
+            sourceLightMode -> Color(0xFFF0F0F2)
+            else -> Color(0xFF2C2C2E)
+        },""",
+    1
+)
+source = source.replace(
+    "contentColor = if (selected) Color.Black else ChandMuted,",
+    """contentColor = when {
+            selected && sourceLightMode -> Color.White
+            selected -> Color.Black
+            sourceLightMode -> Color(0xFF4A4A4F)
+            else -> ChandMuted
+        },""",
+    1
+)
+
+u = u[:source_start] + source + u[source_end:]
+ui_file.write_text(u)
+
+# Installation-only bump after the successful verification build.
+gradle = Path("source/app/build.gradle.kts")
+g = gradle.read_text()
+g = re.sub(r"versionCode\s*=\s*\d+", "versionCode = 43", g, count=1)
+gradle.write_text(g)
