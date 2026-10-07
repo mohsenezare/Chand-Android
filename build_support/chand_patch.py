@@ -2154,3 +2154,552 @@ gradle = Path("source/app/build.gradle.kts")
 g = gradle.read_text()
 g = re.sub(r"versionCode\s*=\s*\d+", "versionCode = 30", g, count=1)
 gradle.write_text(g)
+
+
+# ---------------- symbol catalog updater in Settings ----------------
+# LOCKED CHANGE: adds only a Settings catalog-refresh workflow.
+# Existing prices, live feeds, cards, logos, ordering, sizing and provider behavior stay untouched.
+
+# 1) Repository: strict Iran-stock refresh + broad global-symbol discovery.
+repo_file = root / "data/MarketRepository.kt"
+rr = repo_file.read_text()
+
+if "suspend fun refreshIranStockCatalogStrict()" not in rr:
+    anchor = "    private suspend fun loadTsetmcCatalog(force: Boolean = false): List<MarketDescriptor> = stockCatalogMutex.withLock {\n"
+    if anchor not in rr:
+        raise SystemExit("symbol updater: TSETMC catalog anchor not found")
+    methods = r'''    suspend fun refreshIranStockCatalogStrict(): List<MarketDescriptor> = withContext(Dispatchers.IO) {
+        var lastFailure: Throwable? = null
+
+        val cdnQuotes = runCatching {
+            TsetmcProtocol.parseCdnMarketWatch(httpGet(TSETMC_MARKET_WATCH, 15_000))
+        }.onFailure { lastFailure = it }.getOrNull().orEmpty()
+
+        val quotes = if (cdnQuotes.isNotEmpty()) {
+            cdnQuotes
+        } else {
+            runCatching {
+                TsetmcProtocol.parseLegacyInit(httpGet(TSETMC_LEGACY_INIT, 15_000)).quotes
+            }.onFailure { lastFailure = it }.getOrNull().orEmpty()
+        }
+
+        if (quotes.isEmpty()) {
+            throw IllegalStateException(
+                "TSETMC پاسخ معتبر برای فهرست نمادها نداد",
+                lastFailure
+            )
+        }
+
+        val descriptors = quotes
+            .mapNotNull(::descriptorFromTsetmcQuote)
+            .distinctBy(MarketDescriptor::id)
+            .sortedWith(compareBy<MarketDescriptor> { it.code }.thenBy { it.name })
+
+        if (descriptors.isEmpty()) {
+            throw IllegalStateException("فهرست بورس ایران خالی دریافت شد")
+        }
+
+        stockCatalogMutex.withLock {
+            stockCatalogCache = descriptors
+            stockCatalogLoadedAt = System.currentTimeMillis()
+        }
+        synchronized(knownDescriptors) {
+            descriptors.forEach { knownDescriptors[it.id] = it }
+        }
+        descriptors
+    }
+
+    suspend fun discoverGlobalCatalog(
+        onProgress: (Int) -> Unit = {}
+    ): List<MarketDescriptor> = withContext(Dispatchers.IO) {
+        val seeds = (
+            ('A'..'Z').map { it.toString() } +
+            ('0'..'9').map { it.toString() } +
+            listOf("USD", "EUR", "JPY", "BTC", "ETH", "XAU", "XAG", "OIL", "INDEX")
+        ).distinct()
+
+        val found = linkedMapOf<String, MarketDescriptor>()
+        TRADINGVIEW_MARKET_DESCRIPTORS.forEach { found[it.id] = it }
+
+        var successfulRequests = 0
+        var lastFailure: Throwable? = null
+
+        seeds.forEachIndexed { index, seed ->
+            val result = runCatching { searchTradingViewCatalog(seed) }
+            result.onSuccess { items ->
+                successfulRequests += 1
+                items
+                    .filter { it.source == MarketSource.TRADINGVIEW }
+                    .forEach { found[it.id] = it }
+            }.onFailure {
+                lastFailure = it
+            }
+            onProgress((((index + 1) * 100.0) / seeds.size).toInt().coerceIn(0, 100))
+        }
+
+        if (successfulRequests == 0) {
+            throw IllegalStateException(
+                "منبع بازار جهانی پاسخ نداد",
+                lastFailure
+            )
+        }
+
+        val items = found.values
+            .distinctBy(MarketDescriptor::id)
+            .sortedWith(compareBy<MarketDescriptor> { it.code }.thenBy { it.name })
+
+        if (items.isEmpty()) {
+            throw IllegalStateException("فهرست بازار جهانی خالی دریافت شد")
+        }
+
+        synchronized(knownDescriptors) {
+            items.forEach { knownDescriptors[it.id] = it }
+        }
+        items
+    }
+
+'''
+    rr = rr.replace(anchor, methods + anchor, 1)
+    repo_file.write_text(rr)
+
+# 2) ViewModel state + persistence + update action.
+vm_file = root / "MainViewModel.kt"
+vv = vm_file.read_text()
+
+if "import org.json.JSONArray" not in vv:
+    import_anchor = "import kotlinx.coroutines.withTimeoutOrNull\n"
+    if import_anchor not in vv:
+        raise SystemExit("symbol updater: VM import anchor not found")
+    vv = vv.replace(
+        import_anchor,
+        import_anchor + "import org.json.JSONArray\nimport org.json.JSONObject\n",
+        1
+    )
+
+state_anchor = "val catalogMessage: String? = null\n"
+if "val symbolUpdateRunning: Boolean" not in vv:
+    if state_anchor not in vv:
+        raise SystemExit("symbol updater: ChandUiState anchor not found")
+    vv = vv.replace(
+        state_anchor,
+        """val catalogMessage: String? = null,
+val symbolUpdateRunning: Boolean = false,
+val symbolUpdateProgress: Int = 0,
+val symbolUpdateSucceeded: Boolean? = null,
+val symbolUpdateMessage: String? = null
+""",
+        1
+    )
+
+field_anchor = "private var catalogPage = 1\n"
+if "private val symbolCatalogPrefs" not in vv:
+    if field_anchor not in vv:
+        raise SystemExit("symbol updater: VM field anchor not found")
+    vv = vv.replace(
+        field_anchor,
+        field_anchor + """private val symbolCatalogPrefs = application.getSharedPreferences("chand_symbol_catalog", 0)
+private var savedGlobalCatalog: List<MarketDescriptor> = loadSavedGlobalCatalog()
+""",
+        1
+    )
+
+init_anchor = """init {
+WidgetUpdater.schedule(application)
+repository.knownDescriptors().forEach { descriptorCache[it.id] = it }
+}
+"""
+if "savedGlobalCatalog.forEach { descriptorCache[it.id] = it }" not in vv:
+    if init_anchor not in vv:
+        raise SystemExit("symbol updater: VM init anchor not found")
+    vv = vv.replace(
+        init_anchor,
+        """init {
+WidgetUpdater.schedule(application)
+repository.knownDescriptors().forEach { descriptorCache[it.id] = it }
+savedGlobalCatalog.forEach { descriptorCache[it.id] = it }
+}
+""",
+        1
+    )
+
+catalog_block = """val page = when (source) {
+CatalogSource.MARKETS -> repository.searchMarkets(normalizedQuery, catalogPage)
+CatalogSource.STOCKS -> repository.searchStocks(normalizedQuery, catalogPage)
+}
+page.items.forEach { descriptorCache[it.id] = it }
+val latest = _uiState.value
+if (latest.catalogSource != source || latest.catalogQuery != normalizedQuery) return@launch
+val merged = if (loadMore) latest.catalogItems + page.items else page.items
+"""
+if "val savedItems = if (source == CatalogSource.MARKETS)" not in vv:
+    if catalog_block not in vv:
+        raise SystemExit("symbol updater: loadCatalog block anchor not found")
+    vv = vv.replace(
+        catalog_block,
+        """val page = when (source) {
+CatalogSource.MARKETS -> repository.searchMarkets(normalizedQuery, catalogPage)
+CatalogSource.STOCKS -> repository.searchStocks(normalizedQuery, catalogPage)
+}
+val savedItems = if (source == CatalogSource.MARKETS) {
+savedGlobalCatalog.filter { it.matchesCatalogQuery(normalizedQuery) }
+} else {
+emptyList()
+}
+val currentPageItems = (page.items + savedItems).distinctBy(MarketDescriptor::id)
+currentPageItems.forEach { descriptorCache[it.id] = it }
+val latest = _uiState.value
+if (latest.catalogSource != source || latest.catalogQuery != normalizedQuery) return@launch
+val merged = if (loadMore) latest.catalogItems + currentPageItems else currentPageItems
+""",
+        1
+    )
+
+action_anchor = "fun setGridMode(enabled: Boolean) = updateSettings { copy(gridMode = enabled) }\n"
+if "fun updateSymbolCatalog()" not in vv:
+    if action_anchor not in vv:
+        raise SystemExit("symbol updater: action insertion anchor not found")
+    action = r'''fun updateSymbolCatalog() {
+if (_uiState.value.symbolUpdateRunning) return
+
+_uiState.update {
+it.copy(
+symbolUpdateRunning = true,
+symbolUpdateProgress = 0,
+symbolUpdateSucceeded = null,
+symbolUpdateMessage = "در حال آماده‌سازی به‌روزرسانی…"
+)
+}
+
+viewModelScope.launch {
+try {
+_uiState.update {
+it.copy(
+symbolUpdateProgress = 5,
+symbolUpdateMessage = "در حال دریافت فهرست بورس ایران…"
+)
+}
+
+val previousStockIds = symbolCatalogPrefs
+.getStringSet("last_stock_ids", emptySet())
+.orEmpty()
+.toSet()
+val previousGlobalIds = savedGlobalCatalog.map(MarketDescriptor::id).toSet()
+val hadPreviousSync = symbolCatalogPrefs.getBoolean("has_completed_sync", false)
+
+val stocks = repository.refreshIranStockCatalogStrict()
+stocks.forEach { descriptorCache[it.id] = it }
+
+_uiState.update {
+it.copy(
+symbolUpdateProgress = 50,
+symbolUpdateMessage = "بورس ایران دریافت شد؛ در حال بررسی بازار جهانی…"
+)
+}
+
+val globals = repository.discoverGlobalCatalog { providerProgress ->
+val mapped = 50 + ((providerProgress.coerceIn(0, 100) * 45) / 100)
+_uiState.update { current ->
+if (!current.symbolUpdateRunning) current
+else current.copy(
+symbolUpdateProgress = mapped.coerceIn(50, 95),
+symbolUpdateMessage = "در حال دریافت نمادهای بازار جهانی…"
+)
+}
+}.filter { it.source == MarketSource.TRADINGVIEW }
+.distinctBy(MarketDescriptor::id)
+
+globals.forEach { descriptorCache[it.id] = it }
+savedGlobalCatalog = globals
+saveGlobalCatalog(globals)
+
+val stockIds = stocks.map(MarketDescriptor::id).toSet()
+symbolCatalogPrefs.edit()
+.putStringSet("last_stock_ids", stockIds)
+.putBoolean("has_completed_sync", true)
+.apply()
+
+val newStocks = if (hadPreviousSync) {
+stockIds.count { it !in previousStockIds }
+} else 0
+val newGlobals = if (hadPreviousSync) {
+globals.count { it.id !in previousGlobalIds }
+} else 0
+val newTotal = newStocks + newGlobals
+
+val successMessage = if (!hadPreviousSync) {
+"به‌روزرسانی اولیه با موفقیت انجام شد. " +
+stocks.size + " نماد بورس ایران و " +
+globals.size + " نماد بازار جهانی همگام شد."
+} else if (newTotal > 0) {
+"به‌روزرسانی موفق بود. " +
+newTotal + " نماد جدید اضافه شد (" +
+newStocks + " بورس ایران، " +
+newGlobals + " بازار جهانی)."
+} else {
+"به‌روزرسانی موفق بود. فهرست نمادها از قبل به‌روز است."
+}
+
+_uiState.update {
+it.copy(
+symbolUpdateRunning = false,
+symbolUpdateProgress = 100,
+symbolUpdateSucceeded = true,
+symbolUpdateMessage = successMessage
+)
+}
+} catch (cancelled: CancellationException) {
+throw cancelled
+} catch (failure: Throwable) {
+_uiState.update {
+it.copy(
+symbolUpdateRunning = false,
+symbolUpdateSucceeded = false,
+symbolUpdateMessage = friendlySymbolUpdateError(failure)
+)
+}
+}
+}
+}
+
+private fun MarketDescriptor.matchesCatalogQuery(query: String): Boolean {
+if (query.isBlank()) return true
+return name.contains(query, ignoreCase = true) ||
+code.contains(query, ignoreCase = true) ||
+symbol.contains(query, ignoreCase = true) ||
+category.contains(query, ignoreCase = true)
+}
+
+private fun saveGlobalCatalog(items: List<MarketDescriptor>) {
+val array = JSONArray()
+items.forEach { descriptor ->
+array.put(
+JSONObject()
+.put("id", descriptor.id)
+.put("sourceKey", descriptor.sourceKey)
+.put("name", descriptor.name)
+.put("code", descriptor.code)
+.put("symbol", descriptor.symbol)
+.put("category", descriptor.category)
+.put("unit", descriptor.unit)
+.put("valueScale", descriptor.valueScale)
+)
+}
+symbolCatalogPrefs.edit()
+.putString("global_catalog_json", array.toString())
+.apply()
+}
+
+private fun loadSavedGlobalCatalog(): List<MarketDescriptor> {
+val raw = symbolCatalogPrefs.getString("global_catalog_json", null) ?: return emptyList()
+return runCatching {
+val array = JSONArray(raw)
+buildList {
+for (index in 0 until array.length()) {
+val row = array.optJSONObject(index) ?: continue
+val id = row.optString("id").trim()
+val sourceKey = row.optString("sourceKey").trim()
+if (id.isBlank() || sourceKey.isBlank()) continue
+add(
+MarketDescriptor(
+id = id,
+sourceKey = sourceKey,
+name = row.optString("name"),
+code = row.optString("code"),
+symbol = row.optString("symbol"),
+source = MarketSource.TRADINGVIEW,
+category = row.optString("category"),
+unit = row.optString("unit"),
+valueScale = row.optDouble("valueScale", 1.0)
+)
+)
+}
+}
+}.getOrDefault(emptyList())
+}
+
+private fun friendlySymbolUpdateError(failure: Throwable): String {
+val raw = failure.message.orEmpty()
+val kind = failure::class.java.simpleName
+return when {
+kind.contains("UnknownHost", ignoreCase = true) ||
+raw.contains("UnknownHost", ignoreCase = true) ->
+"به اینترنت یا DNS دسترسی نیست. اتصال را بررسی کنید و دوباره بزنید."
+kind.contains("Timeout", ignoreCase = true) ||
+raw.contains("timeout", ignoreCase = true) ||
+raw.contains("timed out", ignoreCase = true) ->
+"زمان دریافت اطلاعات تمام شد. اتصال اینترنت یا دسترسی به منبع داده کند است."
+raw.contains("TSETMC", ignoreCase = true) ->
+"دریافت فهرست بورس ایران از TSETMC ناموفق بود."
+raw.contains("بازار جهانی", ignoreCase = true) ->
+raw
+raw.isNotBlank() ->
+"به‌روزرسانی انجام نشد: " + raw.take(140)
+else ->
+"به‌روزرسانی انجام نشد چون ارتباط معتبر با منبع داده برقرار نشد."
+}
+}
+
+'''
+    vv = vv.replace(action_anchor, action + action_anchor, 1)
+
+vm_file.write_text(vv)
+
+# 3) Settings UI: green 0..100 progress card / red failure card with reason.
+ui_file = root / "MainActivity.kt"
+uu = ui_file.read_text()
+
+# Wire callback at the existing SettingsDialog call without changing any other call behavior.
+settings_call_start = uu.find("SettingsDialog(", uu.find("if (settingsOpen)"))
+if settings_call_start < 0:
+    raise SystemExit("symbol updater: SettingsDialog call not found")
+settings_call_end = uu.find("\n        )", settings_call_start)
+if settings_call_end < 0:
+    settings_call_end = uu.find("\n    )", settings_call_start)
+if settings_call_end < 0:
+    raise SystemExit("symbol updater: SettingsDialog call end not found")
+settings_call = uu[settings_call_start:settings_call_end]
+if "onUpdateSymbols" not in settings_call:
+    import re as _re
+    settings_call_new, count = _re.subn(
+        r"(\n\s*onManage\s*=)",
+        "\n            onUpdateSymbols = viewModel::updateSymbolCatalog,\\1",
+        settings_call,
+        count=1
+    )
+    if count != 1:
+        raise SystemExit("symbol updater: onManage call anchor not found")
+    uu = uu[:settings_call_start] + settings_call_new + uu[settings_call_end:]
+
+signature_old = """private fun SettingsDialog(
+state: ChandUiState,
+onDismiss: () -> Unit,
+onTheme: (ThemeMode) -> Unit,
+onGrid: (Boolean) -> Unit,
+onManage: () -> Unit
+) {"""
+signature_new = """private fun SettingsDialog(
+state: ChandUiState,
+onDismiss: () -> Unit,
+onTheme: (ThemeMode) -> Unit,
+onGrid: (Boolean) -> Unit,
+onUpdateSymbols: () -> Unit,
+onManage: () -> Unit
+) {"""
+if "onUpdateSymbols: () -> Unit" not in uu:
+    if signature_old not in uu:
+        raise SystemExit("symbol updater: SettingsDialog signature anchor not found")
+    uu = uu.replace(signature_old, signature_new, 1)
+
+manage_button = """TextButton(onClick = onManage, modifier = Modifier.fillMaxWidth()) {
+Text("مدیریت قیمت‌ها")
+}"""
+if "بررسی و به‌روزرسانی نمادها" not in uu:
+    if manage_button not in uu:
+        raise SystemExit("symbol updater: settings manage button anchor not found")
+    update_ui = r'''Spacer(Modifier.height(12.dp))
+HorizontalDivider(color = Color(0xFF343438))
+Text(
+"به‌روزرسانی نمادها",
+color = ChandMuted,
+fontSize = 12.sp,
+modifier = Modifier.padding(top = 12.dp, bottom = 8.dp)
+)
+
+val updateAccent = when {
+state.symbolUpdateSucceeded == false -> Color(0xFFFF5C65)
+state.symbolUpdateRunning || state.symbolUpdateSucceeded == true -> Color(0xFF43D18B)
+else -> Color(0xFF8E8E93)
+}
+val updateSurface = when {
+state.symbolUpdateSucceeded == false -> Color(0xFF301619)
+state.symbolUpdateRunning || state.symbolUpdateSucceeded == true -> Color(0xFF10291D)
+else -> Color(0xFF232428)
+}
+val progressFraction = (state.symbolUpdateProgress.coerceIn(0, 100) / 100f)
+
+Surface(
+modifier = Modifier.fillMaxWidth(),
+shape = RoundedCornerShape(16.dp),
+color = updateSurface,
+border = androidx.compose.foundation.BorderStroke(1.dp, updateAccent.copy(alpha = .78f))
+) {
+Column(Modifier.padding(12.dp)) {
+Row(
+modifier = Modifier.fillMaxWidth(),
+verticalAlignment = Alignment.CenterVertically
+) {
+Text(
+when {
+state.symbolUpdateRunning -> "در حال به‌روزرسانی"
+state.symbolUpdateSucceeded == true -> "به‌روزرسانی موفق"
+state.symbolUpdateSucceeded == false -> "به‌روزرسانی ناموفق"
+else -> "دریافت آخرین فهرست نمادها"
+},
+color = if (state.symbolUpdateSucceeded == null && !state.symbolUpdateRunning) Color.White else updateAccent,
+fontWeight = FontWeight.Bold,
+modifier = Modifier.weight(1f)
+)
+Text(
+state.symbolUpdateProgress.coerceIn(0, 100).toString() + "%",
+color = updateAccent,
+fontWeight = FontWeight.Bold
+)
+}
+
+Spacer(Modifier.height(10.dp))
+Surface(
+modifier = Modifier.fillMaxWidth().height(8.dp),
+shape = CircleShape,
+color = Color(0xFF3A3B40)
+) {
+Box(Modifier.fillMaxSize()) {
+if (progressFraction > 0f) {
+Surface(
+modifier = Modifier
+.fillMaxWidth(progressFraction)
+.height(8.dp),
+shape = CircleShape,
+color = updateAccent
+) {}
+}
+}
+}
+
+state.symbolUpdateMessage?.let { message ->
+Spacer(Modifier.height(9.dp))
+Text(
+message,
+color = if (state.symbolUpdateSucceeded == false) Color(0xFFFFA2A8) else Color(0xFFD7D7DA),
+fontSize = 12.sp,
+lineHeight = 17.sp
+)
+}
+
+Spacer(Modifier.height(6.dp))
+TextButton(
+onClick = onUpdateSymbols,
+enabled = !state.symbolUpdateRunning,
+modifier = Modifier.fillMaxWidth()
+) {
+Text(
+if (state.symbolUpdateRunning) "در حال دریافت…" else "بررسی و به‌روزرسانی نمادها",
+color = if (state.symbolUpdateRunning) ChandMuted else updateAccent,
+fontWeight = FontWeight.Bold
+)
+}
+}
+}
+
+Spacer(Modifier.height(6.dp))
+TextButton(onClick = onManage, modifier = Modifier.fillMaxWidth()) {
+Text("مدیریت قیمت‌ها")
+}'''
+    uu = uu.replace(manage_button, update_ui, 1)
+
+ui_file.write_text(uu)
+
+# Installation-only versionCode bump; visible app behavior/version branding remains otherwise untouched.
+gradle = Path("source/app/build.gradle.kts")
+gg = gradle.read_text()
+gg = re.sub(r"versionCode\s*=\s*\d+", "versionCode = 31", gg, count=1)
+gradle.write_text(gg)
