@@ -1402,3 +1402,57 @@ g = re.sub(
     count=1
 )
 gradle.write_text(g)
+
+
+# ---------------- v4.10 smaller secondary symbol code ----------------
+# Make the second-line symbol/code label (USD, EUR, USDT, BRENT, XAU/USD, ...)
+# smaller so it stays visually secondary to the main market name.
+ui = root / "MainActivity.kt"
+u = ui.read_text()
+
+old_code_logic = """            val codeLength = item.code.trim().length
+            val codeFontSize = when {
+                compact && codeLength <= 5 -> 13.sp
+                compact && codeLength <= 8 -> 12.sp
+                compact -> 11.sp
+                codeLength <= 5 -> 15.sp
+                codeLength <= 8 -> 14.sp
+                else -> 13.sp
+            }
+"""
+new_code_logic = """            val codeLength = item.code.trim().length
+            val codeFontSize = when {
+                compact && codeLength <= 5 -> 11.sp
+                compact && codeLength <= 8 -> 10.sp
+                compact -> 9.sp
+                codeLength <= 5 -> 13.sp
+                codeLength <= 8 -> 12.sp
+                else -> 11.sp
+            }
+"""
+if old_code_logic not in u:
+    raise SystemExit("v4.10 codeFontSize anchor not found")
+u = u.replace(old_code_logic, new_code_logic, 1)
+
+# Slightly tighter line height for the secondary code label.
+u = u.replace(
+    "fontSize = codeFontSize,\n                            fontWeight = FontWeight.SemiBold,",
+    "fontSize = codeFontSize,\n                            lineHeight = codeFontSize * 1.05f,\n                            fontWeight = FontWeight.SemiBold,",
+    1
+)
+
+ui.write_text(u)
+
+gradle = Path("source/app/build.gradle.kts")
+g = gradle.read_text()
+m = re.search(r"versionCode\s*=\s*(\d+)", g)
+if m:
+    next_code = max(int(m.group(1)) + 1, 22)
+    g = re.sub(r"versionCode\s*=\s*\d+", f"versionCode = {next_code}", g, count=1)
+g = re.sub(
+    r'versionName\s*=\s*"[^"]+"',
+    'versionName = "4.10-smaller-symbol-code"',
+    g,
+    count=1
+)
+gradle.write_text(g)
