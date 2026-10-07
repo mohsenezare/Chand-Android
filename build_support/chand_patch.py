@@ -2556,14 +2556,22 @@ if "onUpdateSymbols" not in settings_call:
         raise SystemExit("symbol updater: onManage call anchor not found")
     uu = uu[:settings_call_start] + settings_call_new + uu[settings_call_end:]
 
-signature_old = """private fun SettingsDialog(
-state: ChandUiState,
-onDismiss: () -> Unit,
-onTheme: (ThemeMode) -> Unit,
-onGrid: (Boolean) -> Unit,
-onManage: () -> Unit
-) {"""
-signature_new = """private fun SettingsDialog(
+if "onUpdateSymbols: () -> Unit" not in uu:
+    import re as _re
+    sig_pattern = _re.compile(
+        r"""private\s+fun\s+SettingsDialog\(\s*
+        state\s*:\s*ChandUiState\s*,\s*
+        onDismiss\s*:\s*\(\)\s*->\s*Unit\s*,\s*
+        onTheme\s*:\s*\(ThemeMode\)\s*->\s*Unit\s*,\s*
+        onGrid\s*:\s*\(Boolean\)\s*->\s*Unit\s*,\s*
+        onManage\s*:\s*\(\)\s*->\s*Unit\s*
+        \)\s*\{""",
+        _re.VERBOSE
+    )
+    match = sig_pattern.search(uu)
+    if not match:
+        raise SystemExit("symbol updater: SettingsDialog flexible signature anchor not found")
+    signature_new = """private fun SettingsDialog(
 state: ChandUiState,
 onDismiss: () -> Unit,
 onTheme: (ThemeMode) -> Unit,
@@ -2571,10 +2579,7 @@ onGrid: (Boolean) -> Unit,
 onUpdateSymbols: () -> Unit,
 onManage: () -> Unit
 ) {"""
-if "onUpdateSymbols: () -> Unit" not in uu:
-    if signature_old not in uu:
-        raise SystemExit("symbol updater: SettingsDialog signature anchor not found")
-    uu = uu.replace(signature_old, signature_new, 1)
+    uu = uu[:match.start()] + signature_new + uu[match.end():]
 
 manage_button = """TextButton(onClick = onManage, modifier = Modifier.fillMaxWidth()) {
 Text("مدیریت قیمت‌ها")
