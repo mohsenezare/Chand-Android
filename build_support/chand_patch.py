@@ -1325,910 +1325,366 @@ g = re.sub(
 )
 gradle.write_text(g)
 
-# ---------------- v4.8.1 TSETMC real-trade live fix ----------------
-# Keep the exact v4.8 UI/features; only harden Iranian-market live semantics
-# and quote refresh. A TSETMC card becomes LIVE only after an actual trade today.
+# ---------------- v4.8.4 one-line names + card symbol logos ----------------
+# LOCKED BASELINE: exact v4.8. Only card title overflow and card badge artwork
+# are changed. Prices, live feeds, status logic, layout dimensions, formatting,
+# settings, catalog behavior and all other screens stay untouched.
 
-tse_client = root / "data/TsetmcLiveClient.kt"
-tse_client.write_text(r'''package ir.personal.chand.data
-
-import okhttp3.OkHttpClient
-import okhttp3.Request
-import org.json.JSONArray
-import org.json.JSONObject
-import java.io.Closeable
-import java.time.LocalDate
-import java.time.LocalDateTime
-import java.time.LocalTime
-import java.time.ZoneId
-import java.util.concurrent.Executors
-import java.util.concurrent.ScheduledFuture
-import java.util.concurrent.TimeUnit
-
-/**
- * Near-real-time TSETMC watcher for the selected Iranian symbols.
- *
- * The previous delta path could leave a symbol stuck on a stale snapshot when
- * the app started before that symbol's first trade. This implementation polls
- * the current MarketWatch snapshot about once per second and only emits LIVE
- * ticks when TSETMC reports a real trade time + actual trade activity.
- *
- * A small per-symbol ClosingPriceInfo fallback is used only for selected symbols
- * that are absent from the bulk MarketWatch response.
- */
-class TsetmcLiveClient(
-    private val httpClient: OkHttpClient,
-    insCodes: List<String>,
-    private val onState: (LiveConnectionState) -> Unit,
-    private val onTicks: (List<StreamTick>) -> Unit
-) : Closeable {
-    private val watched = insCodes
-        .map(String::trim)
-        .filter { it.isNotBlank() && it.all(Char::isDigit) }
-        .distinct()
-
-    private val watchedSet = watched.toHashSet()
-    private val scheduler = Executors.newSingleThreadScheduledExecutor { task ->
-        Thread(task, "chand-tsetmc-live").apply { isDaemon = true }
-    }
-
-    @Volatile private var closed = false
-    private var future: ScheduledFuture<*>? = null
-    private var fallbackCursor = 0
-    private var consecutiveFailures = 0
-
-    fun start() {
-        if (closed || watched.isEmpty()) return
-        onState(LiveConnectionState.CONNECTING)
-        future = scheduler.scheduleWithFixedDelay(
-            { pollSafely() },
-            0L,
-            POLL_INTERVAL_MS,
-            TimeUnit.MILLISECONDS
-        )
-    }
-
-    private fun pollSafely() {
-        if (closed) return
-        try {
-            val root = JSONObject(get(MARKET_WATCH_URL))
-            val rows = root.optJSONArray("marketwatch")
-                ?: root.optJSONArray("marketWatch")
-                ?: root.optJSONArray("data")
-                ?: JSONArray()
-
-            val seen = HashSet<String>()
-            val ticks = ArrayList<StreamTick>()
-            for (index in 0 until rows.length()) {
-                val row = rows.optJSONObject(index) ?: continue
-                val code = stringAny(
-                    row,
-                    "insCode", "inscode", "instrumentId", "instrumentID"
-                ).trim()
-                if (code !in watchedSet) continue
-                seen += code
-                parseMarketWatchTick(code, row)?.let(ticks::add)
-            }
-
-            // Some instruments can be absent from the bulk market-watch payload.
-            // Check only a small rotating subset of missing selected symbols so
-            // we stay fresh without hammering TSETMC.
-            val missing = watched.filterNot(seen::contains)
-            if (missing.isNotEmpty()) {
-                repeat(minOf(MAX_FALLBACKS_PER_POLL, missing.size)) {
-                    val code = missing[fallbackCursor.mod(missing.size)]
-                    fallbackCursor = (fallbackCursor + 1).mod(missing.size)
-                    fetchSingleTick(code)?.let(ticks::add)
-                }
-            }
-
-            if (ticks.isNotEmpty()) onTicks(ticks)
-            consecutiveFailures = 0
-            // TSETMC is a fast polling feed, not a websocket.
-            onState(LiveConnectionState.POLLING)
-        } catch (_: Throwable) {
-            consecutiveFailures++
-            onState(
-                if (consecutiveFailures >= OFFLINE_AFTER_FAILURES) {
-                    LiveConnectionState.OFFLINE
-                } else {
-                    LiveConnectionState.POLLING
-                }
-            )
-        }
-    }
-
-    private fun parseMarketWatchTick(code: String, row: JSONObject): StreamTick? {
-        val hEven = longAny(row, "hEven", "heven", "lastHEven", "lastHeven") ?: 0L
-        val last = numberAny(row, "pDrCotVal", "pl", "last", "lastPrice") ?: 0.0
-        val trades = numberAny(row, "zTotTran", "tno", "tradeCount") ?: 0.0
-        val volume = numberAny(row, "qTotTran5J", "tvol", "tradeVolume") ?: 0.0
-
-        // No time / no actual transaction => keep the last valid price in the UI,
-        // but do not promote this card to LIVE.
-        if (hEven <= 0L || last <= 0.0 || (trades <= 0.0 && volume <= 0.0)) return null
-
-        val yesterday = numberAny(row, "priceYesterday", "py", "yClose", "yesterdayPrice")
-        val change = yesterday?.takeIf { it > 0.0 }?.let { last - it }
-            ?: numberAny(row, "priceChange", "change")
-            ?: 0.0
-        val percent = yesterday?.takeIf { it > 0.0 }?.let { change / it * 100.0 }
-            ?: numberAny(row, "priceChangePercent", "changePercent", "percent")
-            ?: 0.0
-
-        return StreamTick(
-            sourceKey = code,
-            itemId = "tsetmc:$code",
-            price = last,
-            high = numberAny(row, "priceMax", "pmax", "high")?.takeIf { it > 0.0 } ?: last,
-            low = numberAny(row, "priceMin", "pmin", "low")?.takeIf { it > 0.0 } ?: last,
-            open = numberAny(row, "priceFirst", "pf", "open")?.takeIf { it > 0.0 } ?: last,
-            change = change,
-            changePercent = percent,
-            direction = when {
-                change > 0.0 -> "high"
-                change < 0.0 -> "low"
-                else -> "same"
-            },
-            sourceUpdatedAtMillis = tehranMillisToday(hEven) ?: System.currentTimeMillis(),
-            bid = null,
-            ask = null
-        )
-    }
-
-    private fun fetchSingleTick(code: String): StreamTick? {
-        return runCatching {
-            val root = JSONObject(get("$CLOSING_INFO_URL/$code"))
-            val row = root.optJSONObject("closingPriceInfo")
-                ?: root.optJSONObject("data")
-                ?: return@runCatching null
-
-            val dEven = longAny(row, "dEven", "deven", "date") ?: 0L
-            val hEven = longAny(row, "hEven", "heven", "lastHEven", "lastHeven") ?: 0L
-            val last = numberAny(row, "pDrCotVal", "last", "lastPrice") ?: 0.0
-            val trades = numberAny(row, "zTotTran", "tradeCount") ?: 0.0
-            val volume = numberAny(row, "qTotTran5J", "tradeVolume") ?: 0.0
-
-            val sourceTime = tehranMillis(dEven, hEven) ?: return@runCatching null
-            val today = LocalDate.now(TEHRAN_ZONE)
-            val sourceDate = java.time.Instant.ofEpochMilli(sourceTime)
-                .atZone(TEHRAN_ZONE)
-                .toLocalDate()
-
-            if (sourceDate != today ||
-                hEven <= 0L ||
-                last <= 0.0 ||
-                (trades <= 0.0 && volume <= 0.0)
-            ) return@runCatching null
-
-            val yesterday = numberAny(row, "priceYesterday", "py", "yClose", "yesterdayPrice")
-            val change = yesterday?.takeIf { it > 0.0 }?.let { last - it }
-                ?: numberAny(row, "priceChange", "change")
-                ?: 0.0
-            val percent = yesterday?.takeIf { it > 0.0 }?.let { change / it * 100.0 }
-                ?: numberAny(row, "priceChangePercent", "changePercent", "percent")
-                ?: 0.0
-
-            StreamTick(
-                sourceKey = code,
-                itemId = "tsetmc:$code",
-                price = last,
-                high = numberAny(row, "priceMax", "pmax", "high")?.takeIf { it > 0.0 } ?: last,
-                low = numberAny(row, "priceMin", "pmin", "low")?.takeIf { it > 0.0 } ?: last,
-                open = numberAny(row, "priceFirst", "pf", "open")?.takeIf { it > 0.0 } ?: last,
-                change = change,
-                changePercent = percent,
-                direction = when {
-                    change > 0.0 -> "high"
-                    change < 0.0 -> "low"
-                    else -> "same"
-                },
-                sourceUpdatedAtMillis = sourceTime,
-                bid = null,
-                ask = null
-            )
-        }.getOrNull()
-    }
-
-    private fun tehranMillisToday(hEven: Long): Long? =
-        tehranMillis(
-            LocalDate.now(TEHRAN_ZONE).let {
-                it.year.toLong() * 10_000L + it.monthValue * 100L + it.dayOfMonth
-            },
-            hEven
-        )
-
-    private fun tehranMillis(dEven: Long, hEven: Long): Long? {
-        if (dEven <= 0L || hEven <= 0L) return null
-        val year = (dEven / 10_000L).toInt()
-        val month = ((dEven / 100L) % 100L).toInt()
-        val day = (dEven % 100L).toInt()
-        val hour = (hEven / 10_000L).toInt()
-        val minute = ((hEven / 100L) % 100L).toInt()
-        val second = (hEven % 100L).toInt()
-        return runCatching {
-            LocalDateTime.of(
-                LocalDate.of(year, month, day),
-                LocalTime.of(hour, minute, second)
-            ).atZone(TEHRAN_ZONE).toInstant().toEpochMilli()
-        }.getOrNull()
-    }
-
-    private fun get(url: String): String {
-        val request = Request.Builder()
-            .url(url)
-            .header("Accept", "application/json,text/plain,*/*")
-            .header("Cache-Control", "no-cache")
-            .header("User-Agent", HTTP_USER_AGENT)
-            .build()
-        return httpClient.newCall(request).execute().use { response ->
-            if (!response.isSuccessful) error("TSETMC HTTP " + response.code)
-            response.body?.string().orEmpty().also {
-                if (it.isBlank() || it.contains("General Error Detected", ignoreCase = true)) {
-                    error("Empty/blocked TSETMC response")
-                }
-            }
-        }
-    }
-
-    override fun close() {
-        closed = true
-        future?.cancel(true)
-        future = null
-        scheduler.shutdownNow()
-    }
-
-    private fun stringAny(value: JSONObject, vararg keys: String): String {
-        for (key in keys) {
-            val raw = value.opt(key)
-            if (raw != null && raw !== JSONObject.NULL) {
-                val text = raw.toString().trim()
-                if (text.isNotBlank()) return text
-            }
-        }
-        return ""
-    }
-
-    private fun numberAny(value: JSONObject, vararg keys: String): Double? {
-        for (key in keys) {
-            val raw = value.opt(key)
-            val number = when (raw) {
-                is Number -> raw.toDouble()
-                null, JSONObject.NULL -> null
-                else -> raw.toString().replace(",", "").trim().toDoubleOrNull()
-            }
-            if (number != null && number.isFinite()) return number
-        }
-        return null
-    }
-
-    private fun longAny(value: JSONObject, vararg keys: String): Long? =
-        numberAny(value, *keys)?.toLong()
-
-    companion object {
-        private val TEHRAN_ZONE = ZoneId.of("Asia/Tehran")
-        private const val POLL_INTERVAL_MS = 900L
-        private const val MAX_FALLBACKS_PER_POLL = 3
-        private const val OFFLINE_AFTER_FAILURES = 4
-        private const val HTTP_USER_AGENT =
-            "Mozilla/5.0 (Linux; Android 14) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/126 Mobile Safari/537.36"
-
-        private const val MARKET_WATCH_URL =
-            "https://cdn.tsetmc.com/api/ClosingPrice/GetMarketWatch?market=0&industrialGroup=&paperTypes%5B0%5D=1&paperTypes%5B1%5D=2&paperTypes%5B2%5D=3&paperTypes%5B3%5D=4&paperTypes%5B4%5D=5&paperTypes%5B5%5D=6&paperTypes%5B6%5D=7&paperTypes%5B7%5D=8&paperTypes%5B8%5D=9&showTraded=false&withBestLimits=false&hEven=0&RefID=0"
-
-        private const val CLOSING_INFO_URL =
-            "https://cdn.tsetmc.com/api/ClosingPrice/GetClosingPriceInfo"
-    }
-}
-''')
-
-# Fix the card-level LIVE badge semantics for Iranian symbols.
 ui = root / "MainActivity.kt"
 u = ui.read_text()
-old_live = """        ir.personal.chand.data.MarketSource.TSETMC -> age <= 30L * 60L * 1000L"""
-new_live = """        ir.personal.chand.data.MarketSource.TSETMC -> {
-            if (item.origin != DataOrigin.LIVE) {
-                false
-            } else {
-                val sourceDate = java.time.Instant.ofEpochMilli(item.sourceUpdatedAtMillis)
-                    .atZone(TehranZone)
-                    .toLocalDate()
-                val today = java.time.ZonedDateTime.now(TehranZone).toLocalDate()
-                sourceDate == today && age <= 30L * 60L * 1000L
-            }
-        }"""
-if old_live not in u:
-    raise SystemExit("v4.8.1 TSETMC LIVE UI anchor not found")
-u = u.replace(old_live, new_live, 1)
-ui.write_text(u)
 
-# Build as a patch release over v4.8; use a higher versionCode so it can update
-# installations of later test builds without uninstalling.
-gradle = Path("source/app/build.gradle.kts")
-g = gradle.read_text()
-g = re.sub(r"versionCode\s*=\s*\d+", "versionCode = 24", g, count=1)
-g = re.sub(
-    r'versionName\s*=\s*"[^"]+"',
-    'versionName = "4.8.1-tsetmc-live-fix"',
-    g,
-    count=1
-)
-gradle.write_text(g)
-
-
-# ---------------- v4.8.2 late-session TSETMC fix ----------------
-# Late-opening instruments (notably commodity/gold ETFs such as Ayar) may be
-# present in bulk MarketWatch before their session begins. Treating presence as
-# freshness can both create a false LIVE badge and prevent the single-symbol
-# fallback from taking over. This patch validates bulk timestamps and falls back
-# whenever the bulk row is stale/untraded, not only when the symbol is absent.
-
-tse_client = root / "data/TsetmcLiveClient.kt"
-t = tse_client.read_text()
-
-old_loop = """            val seen = HashSet<String>()
-            val ticks = ArrayList<StreamTick>()
-            for (index in 0 until rows.length()) {
-                val row = rows.optJSONObject(index) ?: continue
-                val code = stringAny(
-                    row,
-                    "insCode", "inscode", "instrumentId", "instrumentID"
-                ).trim()
-                if (code !in watchedSet) continue
-                seen += code
-                parseMarketWatchTick(code, row)?.let(ticks::add)
-            }
-
-            // Some instruments can be absent from the bulk market-watch payload.
-            // Check only a small rotating subset of missing selected symbols so
-            // we stay fresh without hammering TSETMC.
-            val missing = watched.filterNot(seen::contains)
-            if (missing.isNotEmpty()) {
-                repeat(minOf(MAX_FALLBACKS_PER_POLL, missing.size)) {
-                    val code = missing[fallbackCursor.mod(missing.size)]
-                    fallbackCursor = (fallbackCursor + 1).mod(missing.size)
-                    fetchSingleTick(code)?.let(ticks::add)
-                }
-            }
+# 1) Never let a long instrument name consume a second row in a market card.
+# Ellipsis keeps the bottom price block at the exact v4.8 vertical position.
+old_title_lines = """                            maxLines = if (gridMode) 2 else 3,
+                            overflow = TextOverflow.Ellipsis
 """
-new_loop = """            val seen = HashSet<String>()
-            val needsFallback = LinkedHashSet<String>()
-            val ticks = ArrayList<StreamTick>()
-            for (index in 0 until rows.length()) {
-                val row = rows.optJSONObject(index) ?: continue
-                val code = stringAny(
-                    row,
-                    "insCode", "inscode", "instrumentId", "instrumentID"
-                ).trim()
-                if (code !in watchedSet) continue
-                seen += code
-
-                val bulkTick = parseMarketWatchTick(code, row)
-                if (bulkTick != null) {
-                    ticks += bulkTick
-                } else {
-                    // Important for gold/commodity ETFs: they are often already
-                    // listed in MarketWatch before their later trading session opens.
-                    // Being present must not block the direct quote fallback.
-                    needsFallback += code
-                }
-            }
-
-            watched.filterNot(seen::contains).forEach(needsFallback::add)
-
-            if (needsFallback.isNotEmpty()) {
-                val fallbackList = needsFallback.toList()
-                repeat(minOf(MAX_FALLBACKS_PER_POLL, fallbackList.size)) {
-                    val code = fallbackList[fallbackCursor.mod(fallbackList.size)]
-                    fallbackCursor = (fallbackCursor + 1).mod(fallbackList.size)
-                    fetchSingleTick(code)?.let(ticks::add)
-                }
-            }
+new_title_lines = """                            maxLines = 1,
+                            softWrap = false,
+                            overflow = TextOverflow.Ellipsis
 """
-if old_loop not in t:
-    raise SystemExit("v4.8.2 fallback loop anchor not found")
-t = t.replace(old_loop, new_loop, 1)
+if old_title_lines not in u:
+    raise SystemExit("v4.8.4 card title anchor not found")
+u = u.replace(old_title_lines, new_title_lines, 1)
 
-old_parse_head = """        val hEven = longAny(row, "hEven", "heven", "lastHEven", "lastHeven") ?: 0L
-        val last = numberAny(row, "pDrCotVal", "pl", "last", "lastPrice") ?: 0.0
-        val trades = numberAny(row, "zTotTran", "tno", "tradeCount") ?: 0.0
-        val volume = numberAny(row, "qTotTran5J", "tvol", "tradeVolume") ?: 0.0
+# 2) Only the badge used inside MarketCard changes. Other MarketBadge usages
+# (details/chart/etc.) remain exactly as v4.8.
+old_card_badge = """                    MarketBadge(item, Modifier.size(if (compact) 43.dp else 52.dp))"""
+new_card_badge = """                    MarketCardBadge(item, Modifier.size(if (compact) 43.dp else 52.dp))"""
+if old_card_badge not in u:
+    raise SystemExit("v4.8.4 card badge anchor not found")
+u = u.replace(old_card_badge, new_card_badge, 1)
 
-        // No time / no actual transaction => keep the last valid price in the UI,
-        // but do not promote this card to LIVE.
-        if (hEven <= 0L || last <= 0.0 || (trades <= 0.0 && volume <= 0.0)) return null
+# Imports required by the card-only async logo loader. No external image library
+# is introduced; Android BitmapFactory + the existing coroutines stack are used.
+imports = [
+    (
+        "import android.os.Bundle\n",
+        "import android.os.Bundle\nimport android.graphics.Bitmap\nimport android.graphics.BitmapFactory\n"
+    ),
+    (
+        "import androidx.compose.foundation.Canvas\n",
+        "import androidx.compose.foundation.Canvas\nimport androidx.compose.foundation.Image\n"
+    ),
+    (
+        "import androidx.compose.ui.graphics.Color\n",
+        "import androidx.compose.ui.graphics.Color\nimport androidx.compose.ui.graphics.asImageBitmap\n"
+    ),
+    (
+        "import androidx.compose.ui.text.font.FontWeight\n",
+        "import androidx.compose.ui.text.font.FontWeight\nimport androidx.compose.ui.layout.ContentScale\n"
+    ),
+]
+for anchor, replacement in imports:
+    if replacement.splitlines()[-1] not in u and anchor in u:
+        u = u.replace(anchor, replacement, 1)
+
+badge_anchor = """@Composable
+private fun MarketBadge(item: MarketItem, modifier: Modifier = Modifier) {
 """
-new_parse_head = """        val dEven = longAny(row, "dEven", "deven", "date") ?: 0L
-        val hEven = longAny(row, "hEven", "heven", "lastHEven", "lastHeven") ?: 0L
-        val last = numberAny(row, "pDrCotVal", "pl", "last", "lastPrice") ?: 0.0
-        val trades = numberAny(row, "zTotTran", "tno", "tradeCount") ?: 0.0
-        val volume = numberAny(row, "qTotTran5J", "tvol", "tradeVolume") ?: 0.0
 
-        // No actual transaction => keep the previous valid price, but do not mark LIVE.
-        if (hEven <= 0L || last <= 0.0 || (trades <= 0.0 && volume <= 0.0)) return null
+card_logo_code = r'''@Composable
+private fun MarketCardBadge(item: MarketItem, modifier: Modifier = Modifier) {
+    // Existing bespoke Chand icons for currencies, metals, crypto and global
+    // instruments are already symbol-specific. Replace only the generic TSETMC
+    // stock/fund badge with a real issuer/fund icon when one can be resolved.
+    if (item.source != ir.personal.chand.data.MarketSource.TSETMC) {
+        MarketBadge(item, modifier)
+        return
+    }
 
-        // When the bulk API includes a date, require today's trading date.
-        val today = LocalDate.now(TEHRAN_ZONE)
-        val todayInt = today.year.toLong() * 10_000L + today.monthValue * 100L + today.dayOfMonth
-        if (dEven > 0L && dEven != todayInt) return null
-
-        // Some pre-open rows omit dEven but carry yesterday's hEven. If that time
-        // is still in the future relative to Tehran now, it cannot be today's trade.
-        if (dEven <= 0L) {
-            val tradeSeconds = hhmmssToSeconds(hEven) ?: return null
-            val nowSeconds = LocalTime.now(TEHRAN_ZONE).toSecondOfDay()
-            if (tradeSeconds > nowSeconds + BULK_FUTURE_TOLERANCE_SECONDS) return null
+    val logoState = androidx.compose.runtime.produceState<Bitmap?>(
+        initialValue = null,
+        key1 = item.id,
+        key2 = item.code
+    ) {
+        value = kotlinx.coroutines.withContext(kotlinx.coroutines.Dispatchers.IO) {
+            TsetmcCardLogoResolver.load(item)
         }
-"""
-if old_parse_head not in t:
-    raise SystemExit("v4.8.2 bulk timestamp anchor not found")
-t = t.replace(old_parse_head, new_parse_head, 1)
-
-old_source_time = """            sourceUpdatedAtMillis = tehranMillisToday(hEven) ?: System.currentTimeMillis(),"""
-new_source_time = """            sourceUpdatedAtMillis = if (dEven > 0L) {
-                tehranMillis(dEven, hEven) ?: System.currentTimeMillis()
-            } else {
-                tehranMillisToday(hEven) ?: System.currentTimeMillis()
-            },"""
-if old_source_time not in t:
-    raise SystemExit("v4.8.2 source time anchor not found")
-t = t.replace(old_source_time, new_source_time, 1)
-
-helper_anchor = """    private fun tehranMillisToday(hEven: Long): Long? =
-"""
-helper = """    private fun hhmmssToSeconds(hEven: Long): Int? {
-        if (hEven <= 0L) return null
-        val hour = (hEven / 10_000L).toInt()
-        val minute = ((hEven / 100L) % 100L).toInt()
-        val second = (hEven % 100L).toInt()
-        if (hour !in 0..23 || minute !in 0..59 || second !in 0..59) return null
-        return hour * 3600 + minute * 60 + second
     }
 
-"""
-if helper_anchor not in t:
-    raise SystemExit("v4.8.2 helper anchor not found")
-t = t.replace(helper_anchor, helper + helper_anchor, 1)
-
-const_anchor = """        private const val POLL_INTERVAL_MS = 900L
-        private const val MAX_FALLBACKS_PER_POLL = 3
-"""
-const_repl = """        private const val POLL_INTERVAL_MS = 900L
-        private const val MAX_FALLBACKS_PER_POLL = 4
-        private const val BULK_FUTURE_TOLERANCE_SECONDS = 90
-"""
-if const_anchor not in t:
-    raise SystemExit("v4.8.2 constants anchor not found")
-t = t.replace(const_anchor, const_repl, 1)
-
-tse_client.write_text(t)
-
-# Keep UI/features exactly on the v4.8 line; only bump the patch version.
-gradle = Path("source/app/build.gradle.kts")
-g = gradle.read_text()
-g = re.sub(r"versionCode\s*=\s*\d+", "versionCode = 25", g, count=1)
-g = re.sub(
-    r'versionName\s*=\s*"[^"]+"',
-    'versionName = "4.8.2-gold-fund-live-fix"',
-    g,
-    count=1
-)
-gradle.write_text(g)
-
-
-# ---------------- v4.8.3 TSETMC session-confirmed feed ----------------
-# Bulk MarketWatch can expose zero/ambiguous dEven and stale hEven values for
-# late-opening instruments. Do not call a TSETMC card LIVE until a direct
-# ClosingPriceInfo response confirms a real trade for today's Gregorian dEven.
-# Once confirmed, bulk updates are accepted only if their event time never moves
-# backwards. Symbols whose bulk feed lags direct data are promoted to direct mode.
-
-tse_client = root / "data/TsetmcLiveClient.kt"
-tse_client.write_text(r'''package ir.personal.chand.data
-
-import okhttp3.OkHttpClient
-import okhttp3.Request
-import org.json.JSONArray
-import org.json.JSONObject
-import java.io.Closeable
-import java.time.LocalDate
-import java.time.LocalDateTime
-import java.time.LocalTime
-import java.time.ZoneId
-import java.util.LinkedHashMap
-import java.util.LinkedHashSet
-import java.util.concurrent.Executors
-import java.util.concurrent.ScheduledFuture
-import java.util.concurrent.TimeUnit
-import kotlin.math.abs
-
-/**
- * TSETMC near-real-time client.
- *
- * Key rule: a symbol is never considered live merely because it is present in
- * MarketWatch. At least one direct ClosingPriceInfo response must confirm an
- * actual trade with today's dEven. This is important for late-opening gold and
- * commodity funds (e.g. عیار), whose MarketWatch row can carry yesterday's
- * values before their own session begins.
- */
-class TsetmcLiveClient(
-    private val httpClient: OkHttpClient,
-    insCodes: List<String>,
-    private val onState: (LiveConnectionState) -> Unit,
-    private val onTicks: (List<StreamTick>) -> Unit
-) : Closeable {
-    private val watched = insCodes
-        .map(String::trim)
-        .filter { it.isNotBlank() && it.all(Char::isDigit) }
-        .distinct()
-
-    private val watchedSet = watched.toHashSet()
-    private val scheduler = Executors.newSingleThreadScheduledExecutor { task ->
-        Thread(task, "chand-tsetmc-live").apply { isDaemon = true }
-    }
-
-    @Volatile private var closed = false
-    private var future: ScheduledFuture<*>? = null
-    private var auditCursor = 0
-    private var consecutiveFailures = 0
-
-    // Gregorian YYYYMMDD confirmed by the direct quote endpoint.
-    private val confirmedDateByCode = HashMap<String, Long>()
-
-    // If direct quote is newer/different than bulk, keep this symbol on direct
-    // polling for the remainder of the session.
-    private val directPreferred = LinkedHashSet<String>()
-
-    // Never allow an older source event to overwrite a newer one.
-    private val lastSourceMillis = HashMap<String, Long>()
-
-    fun start() {
-        if (closed || watched.isEmpty()) return
-        onState(LiveConnectionState.CONNECTING)
-        future = scheduler.scheduleWithFixedDelay(
-            { pollSafely() },
-            0L,
-            POLL_INTERVAL_MS,
-            TimeUnit.MILLISECONDS
-        )
-    }
-
-    private fun pollSafely() {
-        if (closed) return
-
-        val today = LocalDate.now(TEHRAN_ZONE)
-        val todayKey = today.year.toLong() * 10_000L + today.monthValue * 100L + today.dayOfMonth
-
-        // Reset per-session confirmation after the Tehran trading date changes.
-        confirmedDateByCode.entries.removeIf { it.value != todayKey }
-        if (confirmedDateByCode.isEmpty()) {
-            directPreferred.retainAll(emptySet())
-            lastSourceMillis.clear()
-        }
-
-        try {
-            val bulk = fetchBulkCandidates(today)
-            val directTargets = buildDirectTargets(bulk.keys, todayKey)
-            val direct = LinkedHashMap<String, StreamTick>()
-
-            directTargets.forEach { code ->
-                fetchDirectTick(code, todayKey)?.let { tick ->
-                    confirmedDateByCode[code] = todayKey
-                    direct[code] = tick
-
-                    val bulkTick = bulk[code]
-                    if (bulkTick == null ||
-                        tick.sourceUpdatedAtMillis > bulkTick.sourceUpdatedAtMillis + BULK_LAG_TOLERANCE_MS ||
-                        abs(tick.price - bulkTick.price) >= PRICE_DIFFERENCE_EPSILON
-                    ) {
-                        directPreferred += code
-                    }
-                }
-            }
-
-            val emitted = ArrayList<StreamTick>()
-            watched.forEach { code ->
-                val confirmedToday = confirmedDateByCode[code] == todayKey
-                val directTick = direct[code]
-                val bulkTick = bulk[code]
-
-                val chosen = when {
-                    directTick != null -> directTick
-                    !confirmedToday -> null
-                    code in directPreferred -> {
-                        // A known-lagging symbol must not regress to a stale bulk row.
-                        bulkTick?.takeIf {
-                            it.sourceUpdatedAtMillis >= (lastSourceMillis[code] ?: 0L)
-                        }
-                    }
-                    else -> bulkTick
-                } ?: return@forEach
-
-                val previousTime = lastSourceMillis[code] ?: 0L
-                if (chosen.sourceUpdatedAtMillis < previousTime) return@forEach
-
-                lastSourceMillis[code] = maxOf(previousTime, chosen.sourceUpdatedAtMillis)
-                emitted += chosen
-            }
-
-            if (emitted.isNotEmpty()) onTicks(emitted)
-
-            consecutiveFailures = 0
-            onState(
-                if (confirmedDateByCode.isNotEmpty()) {
-                    LiveConnectionState.POLLING
-                } else {
-                    LiveConnectionState.CONNECTING
-                }
-            )
-        } catch (_: Throwable) {
-            consecutiveFailures++
-            onState(
-                if (consecutiveFailures >= OFFLINE_AFTER_FAILURES) {
-                    LiveConnectionState.OFFLINE
-                } else {
-                    LiveConnectionState.POLLING
-                }
+    val logo = logoState.value
+    if (logo != null) {
+        Surface(
+            modifier = modifier,
+            shape = CircleShape,
+            color = Color(0xFF25262A),
+            border = androidx.compose.foundation.BorderStroke(1.dp, Color(0xFF555862))
+        ) {
+            Image(
+                bitmap = logo.asImageBitmap(),
+                contentDescription = item.name,
+                modifier = Modifier
+                    .fillMaxSize()
+                    .padding(3.dp),
+                contentScale = ContentScale.Fit
             )
         }
-    }
+    } else {
+        // Symbol-specific fallback: never show the old generic stock/category
+        // artwork on a market card when no remote issuer icon is available.
+        val badgeText = item.code
+            .trim()
+            .ifBlank { item.name.trim() }
+            .take(3)
 
-    private fun fetchBulkCandidates(today: LocalDate): Map<String, StreamTick> {
-        val root = JSONObject(get(MARKET_WATCH_URL))
-        val rows = root.optJSONArray("marketwatch")
-            ?: root.optJSONArray("marketWatch")
-            ?: root.optJSONArray("data")
-            ?: JSONArray()
-
-        val result = LinkedHashMap<String, StreamTick>()
-        for (index in 0 until rows.length()) {
-            val row = rows.optJSONObject(index) ?: continue
-            val code = stringAny(
-                row,
-                "insCode", "inscode", "instrumentId", "instrumentID"
-            ).trim()
-            if (code !in watchedSet) continue
-
-            parseBulkTick(code, row, today)?.let { result[code] = it }
-        }
-        return result
-    }
-
-    private fun parseBulkTick(
-        code: String,
-        row: JSONObject,
-        today: LocalDate
-    ): StreamTick? {
-        val dEven = longAny(row, "dEven", "deven", "date") ?: 0L
-        val hEven = longAny(row, "hEven", "heven", "lastHEven", "lastHeven") ?: 0L
-        val last = numberAny(row, "pDrCotVal", "pl", "last", "lastPrice") ?: 0.0
-        val trades = numberAny(row, "zTotTran", "tno", "tradeCount") ?: 0.0
-        val volume = numberAny(row, "qTotTran5J", "tvol", "tradeVolume") ?: 0.0
-
-        if (hEven <= 0L || last <= 0.0 || (trades <= 0.0 && volume <= 0.0)) return null
-
-        val todayKey = today.year.toLong() * 10_000L + today.monthValue * 100L + today.dayOfMonth
-        if (dEven > 0L && dEven != todayKey) return null
-
-        val sourceMillis = if (dEven > 0L) {
-            tehranMillis(dEven, hEven)
-        } else {
-            // dEven=0 is ambiguous. We keep this as a candidate only; it cannot
-            // become LIVE until a direct quote confirms today's session.
-            tehranMillis(todayKey, hEven)
-        } ?: return null
-
-        // A source time in the future is a classic sign of carrying yesterday's
-        // hEven into today's pre-open row.
-        if (sourceMillis > System.currentTimeMillis() + FUTURE_TOLERANCE_MS) return null
-
-        return makeTick(code, row, last, sourceMillis)
-    }
-
-    private fun buildDirectTargets(
-        bulkCodes: Set<String>,
-        todayKey: Long
-    ): LinkedHashSet<String> {
-        val targets = LinkedHashSet<String>()
-
-        // Symbols already proven to have a lagging bulk row stay on direct mode.
-        targets.addAll(directPreferred)
-
-        // Anything missing from bulk needs direct inspection.
-        watched.filterNot(bulkCodes::contains).forEach(targets::add)
-
-        // Most importantly: until each visible TSETMC symbol has one confirmed
-        // direct trade today, audit a rotating subset every poll. This means a
-        // fund that opens later switches to live automatically within a few sec.
-        val unconfirmed = watched.filter { confirmedDateByCode[it] != todayKey }
-        if (unconfirmed.isNotEmpty()) {
-            repeat(minOf(DIRECT_CONFIRM_PER_POLL, unconfirmed.size)) {
-                val code = unconfirmed[auditCursor.mod(unconfirmed.size)]
-                auditCursor = (auditCursor + 1).mod(unconfirmed.size)
-                targets += code
-            }
-        } else if (watched.isNotEmpty()) {
-            // Periodic direct audit detects a bulk feed that gets stuck mid-session.
-            repeat(minOf(DIRECT_AUDIT_PER_POLL, watched.size)) {
-                val code = watched[auditCursor.mod(watched.size)]
-                auditCursor = (auditCursor + 1).mod(watched.size)
-                targets += code
-            }
-        }
-
-        return targets
-    }
-
-    private fun fetchDirectTick(code: String, todayKey: Long): StreamTick? {
-        return runCatching {
-            val root = JSONObject(get("$CLOSING_INFO_URL/$code"))
-            val row = root.optJSONObject("closingPriceInfo")
-                ?: root.optJSONObject("data")
-                ?: return@runCatching null
-
-            val dEven = longAny(row, "dEven", "deven", "date") ?: 0L
-            val eventTime = longAny(
-                row,
-                "lastHEven", "lastHeven", "hEven", "heven"
-            ) ?: 0L
-            val last = numberAny(row, "pDrCotVal", "last", "lastPrice") ?: 0.0
-            val trades = numberAny(row, "zTotTran", "tradeCount") ?: 0.0
-            val volume = numberAny(row, "qTotTran5J", "tradeVolume") ?: 0.0
-
-            // This is the authoritative session gate.
-            if (dEven != todayKey ||
-                eventTime <= 0L ||
-                last <= 0.0 ||
-                (trades <= 0.0 && volume <= 0.0)
-            ) return@runCatching null
-
-            val sourceMillis = tehranMillis(dEven, eventTime) ?: return@runCatching null
-            if (sourceMillis > System.currentTimeMillis() + FUTURE_TOLERANCE_MS) {
-                return@runCatching null
-            }
-
-            makeTick(code, row, last, sourceMillis)
-        }.getOrNull()
-    }
-
-    private fun makeTick(
-        code: String,
-        row: JSONObject,
-        last: Double,
-        sourceMillis: Long
-    ): StreamTick {
-        val yesterday = numberAny(row, "priceYesterday", "py", "yClose", "yesterdayPrice")
-        val change = numberAny(row, "priceChange", "change")
-            ?: yesterday?.takeIf { it > 0.0 }?.let { last - it }
-            ?: 0.0
-        val percent = numberAny(row, "priceChangePercent", "changePercent", "percent")
-            ?: yesterday?.takeIf { it > 0.0 }?.let { change / it * 100.0 }
-            ?: 0.0
-
-        return StreamTick(
-            sourceKey = code,
-            itemId = "tsetmc:$code",
-            price = last,
-            high = numberAny(row, "priceMax", "pmax", "high")?.takeIf { it > 0.0 } ?: last,
-            low = numberAny(row, "priceMin", "pmin", "low")?.takeIf { it > 0.0 } ?: last,
-            open = numberAny(row, "priceFirst", "pf", "open")?.takeIf { it > 0.0 } ?: last,
-            change = change,
-            changePercent = percent,
-            direction = when {
-                change > 0.0 -> "high"
-                change < 0.0 -> "low"
-                else -> "same"
-            },
-            sourceUpdatedAtMillis = sourceMillis,
-            bid = null,
-            ask = null
-        )
-    }
-
-    private fun tehranMillis(dEven: Long, hEven: Long): Long? {
-        if (dEven <= 0L || hEven <= 0L) return null
-        val year = (dEven / 10_000L).toInt()
-        val month = ((dEven / 100L) % 100L).toInt()
-        val day = (dEven % 100L).toInt()
-        val hour = (hEven / 10_000L).toInt()
-        val minute = ((hEven / 100L) % 100L).toInt()
-        val second = (hEven % 100L).toInt()
-
-        return runCatching {
-            LocalDateTime.of(
-                LocalDate.of(year, month, day),
-                LocalTime.of(hour, minute, second)
-            ).atZone(TEHRAN_ZONE).toInstant().toEpochMilli()
-        }.getOrNull()
-    }
-
-    private fun get(url: String): String {
-        val request = Request.Builder()
-            .url(url)
-            .header("Accept", "application/json,text/plain,*/*")
-            .header("Cache-Control", "no-cache")
-            .header("Pragma", "no-cache")
-            .header("User-Agent", HTTP_USER_AGENT)
-            .build()
-
-        return httpClient.newCall(request).execute().use { response ->
-            if (!response.isSuccessful) error("TSETMC HTTP " + response.code)
-            response.body?.string().orEmpty().also {
-                if (it.isBlank() ||
-                    it.contains("General Error Detected", ignoreCase = true) ||
-                    it.contains("مسدود", ignoreCase = true)
-                ) {
-                    error("Empty/blocked TSETMC response")
-                }
+        Surface(
+            modifier = modifier,
+            shape = CircleShape,
+            color = Color(0xFF25262A),
+            border = androidx.compose.foundation.BorderStroke(1.dp, Color(0xFF5B5E66))
+        ) {
+            Box(
+                modifier = Modifier.fillMaxSize(),
+                contentAlignment = Alignment.Center
+            ) {
+                Text(
+                    text = badgeText,
+                    color = Color(0xFFE7E8EA),
+                    fontSize = when (badgeText.length) {
+                        0, 1 -> 15.sp
+                        2 -> 12.sp
+                        else -> 10.sp
+                    },
+                    lineHeight = 13.sp,
+                    fontWeight = FontWeight.Bold,
+                    maxLines = 1
+                )
             }
         }
     }
+}
 
-    override fun close() {
-        closed = true
-        future?.cancel(true)
-        future = null
-        scheduler.shutdownNow()
-    }
+private object TsetmcCardLogoResolver {
+    private val bitmapCache = java.util.concurrent.ConcurrentHashMap<String, Bitmap>()
+    private val failed = java.util.concurrent.ConcurrentHashMap.newKeySet<String>()
 
-    private fun stringAny(value: JSONObject, vararg keys: String): String {
-        for (key in keys) {
-            val raw = value.opt(key)
-            if (raw != null && raw !== JSONObject.NULL) {
-                val text = raw.toString().trim()
-                if (text.isNotBlank()) return text
-            }
+    // A few high-confidence issuer domains make common symbols instant; every
+    // other TSETMC symbol is resolved dynamically from Fund/Codal metadata.
+    private val knownDomains = mapOf(
+        "وپارس" to "parsian-bank.ir",
+        "عیار" to "emofid.com",
+        "وبملت" to "bankmellat.ir",
+        "وتجارت" to "tejaratbank.ir",
+        "وبصادر" to "bsi.ir",
+        "وپاسار" to "bpi.ir",
+        "فولاد" to "msc.ir",
+        "فملی" to "nicico.com",
+        "خودرو" to "ikco.ir",
+        "خساپا" to "saipacorp.com"
+    )
+
+    fun load(item: MarketItem): Bitmap? {
+        val key = item.id.ifBlank { item.code }
+        bitmapCache[key]?.let { return it }
+        if (key in failed) return null
+
+        val domain = knownDomains[item.code.trim()]
+            ?: resolveDomain(item)
+
+        if (domain.isNullOrBlank()) {
+            failed += key
+            return null
         }
-        return ""
-    }
 
-    private fun numberAny(value: JSONObject, vararg keys: String): Double? {
-        for (key in keys) {
-            val raw = value.opt(key)
-            val number = when (raw) {
-                is Number -> raw.toDouble()
-                null, JSONObject.NULL -> null
-                else -> raw.toString().replace(",", "").trim().toDoubleOrNull()
-            }
-            if (number != null && number.isFinite()) return number
+        val bitmap = loadDomainIcon(domain)
+        if (bitmap != null) {
+            bitmapCache[key] = bitmap
+            return bitmap
         }
+
+        failed += key
         return null
     }
 
-    private fun longAny(value: JSONObject, vararg keys: String): Long? =
-        numberAny(value, *keys)?.toLong()
+    private fun resolveDomain(item: MarketItem): String? {
+        val candidates = LinkedHashSet<String>()
+        val code = item.code.trim()
+        val insCode = item.id.substringAfter("tsetmc:", "")
+            .takeIf { it.isNotBlank() && it.all(Char::isDigit) }
 
-    companion object {
-        private val TEHRAN_ZONE = ZoneId.of("Asia/Tehran")
+        // Funds/ETFs often expose their own web address here.
+        if (insCode != null) {
+            collectRemoteUrls(
+                "https://cdn.tsetmc.com/api/Fund/GetETFByInsCode/$insCode",
+                candidates
+            )
+        }
 
-        private const val POLL_INTERVAL_MS = 900L
-        private const val DIRECT_CONFIRM_PER_POLL = 3
-        private const val DIRECT_AUDIT_PER_POLL = 1
-        private const val BULK_LAG_TOLERANCE_MS = 3_000L
-        private const val FUTURE_TOLERANCE_MS = 90_000L
-        private const val PRICE_DIFFERENCE_EPSILON = 0.01
-        private const val OFFLINE_AFTER_FAILURES = 4
+        // Companies and fund managers usually expose a publisher website in
+        // Codal metadata. The parser intentionally scans the JSON recursively
+        // so it remains compatible if the exact website field name changes.
+        if (code.isNotBlank()) {
+            val encoded = java.net.URLEncoder.encode(
+                code,
+                java.nio.charset.StandardCharsets.UTF_8.toString()
+            )
+            collectRemoteUrls(
+                "https://cdn.tsetmc.com/api/Codal/GetCodalPublisherBySymbol/$encoded",
+                candidates
+            )
+        }
 
-        private const val HTTP_USER_AGENT =
-            "Mozilla/5.0 (Linux; Android 14) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/126 Mobile Safari/537.36"
+        return candidates
+            .asSequence()
+            .mapNotNull(::domainFromCandidate)
+            .firstOrNull { domain ->
+                val d = domain.lowercase()
+                d !in setOf(
+                    "tsetmc.com",
+                    "cdn.tsetmc.com",
+                    "codal.ir",
+                    "www.codal.ir",
+                    "seo.ir",
+                    "gmail.com",
+                    "yahoo.com"
+                ) &&
+                    !d.endsWith(".tsetmc.com") &&
+                    !d.endsWith(".codal.ir")
+            }
+    }
 
-        private const val MARKET_WATCH_URL =
-            "https://cdn.tsetmc.com/api/ClosingPrice/GetMarketWatch?market=0&industrialGroup=&paperTypes%5B0%5D=1&paperTypes%5B1%5D=2&paperTypes%5B2%5D=3&paperTypes%5B3%5D=4&paperTypes%5B4%5D=5&paperTypes%5B5%5D=6&paperTypes%5B6%5D=7&paperTypes%5B7%5D=8&paperTypes%5B8%5D=9&showTraded=false&withBestLimits=false&hEven=0&RefID=0"
+    private fun collectRemoteUrls(
+        url: String,
+        output: MutableSet<String>
+    ) {
+        val text = runCatching { httpText(url) }.getOrNull() ?: return
+        val root = runCatching { org.json.JSONTokener(text).nextValue() }.getOrNull()
+            ?: return
+        collectStrings(root, output)
+    }
 
-        private const val CLOSING_INFO_URL =
-            "https://cdn.tsetmc.com/api/ClosingPrice/GetClosingPriceInfo"
+    private fun collectStrings(
+        value: Any?,
+        output: MutableSet<String>
+    ) {
+        when (value) {
+            is org.json.JSONObject -> {
+                val keys = value.keys()
+                while (keys.hasNext()) {
+                    val key = keys.next()
+                    collectStrings(value.opt(key), output)
+                }
+            }
+            is org.json.JSONArray -> {
+                for (index in 0 until value.length()) {
+                    collectStrings(value.opt(index), output)
+                }
+            }
+            is String -> {
+                val raw = value.trim()
+                if (raw.isBlank()) return
+
+                val urlRegex = Regex(
+                    """(?i)(?:https?://|www\.)[^\s"'<>]+"""
+                )
+                urlRegex.findAll(raw).forEach { output += it.value }
+
+                // Also accept plain domains that commonly appear in publisher
+                // fields such as Website without a scheme.
+                val domainRegex = Regex(
+                    """(?i)\b(?:[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?\.)+(?:ir|com|org|net|co)\b"""
+                )
+                domainRegex.findAll(raw).forEach { output += it.value }
+            }
+        }
+    }
+
+    private fun domainFromCandidate(candidate: String): String? {
+        var value = candidate.trim()
+            .trimEnd('.', ',', ';', '/', ')', ']', '}')
+        if (value.isBlank()) return null
+
+        if (!value.startsWith("http://", true) &&
+            !value.startsWith("https://", true)
+        ) {
+            value = "https://" + value.removePrefix("www.")
+        }
+
+        return runCatching {
+            java.net.URI(value).host
+                ?.lowercase()
+                ?.removePrefix("www.")
+        }.getOrNull()?.takeIf { '.' in it }
+    }
+
+    private fun loadDomainIcon(domain: String): Bitmap? {
+        // Prefer the site's own favicon first.
+        val directCandidates = listOf(
+            "https://$domain/favicon.ico",
+            "https://www.$domain/favicon.ico"
+        )
+        for (url in directCandidates) {
+            loadBitmap(url)?.let { return it }
+        }
+
+        // Google's favicon endpoint is a resilient fallback for issuer sites
+        // whose icon lives at a non-standard path.
+        val googleUrl =
+            "https://www.google.com/s2/favicons?domain=$domain&sz=128"
+        return loadBitmap(googleUrl)
+    }
+
+    private fun httpText(url: String): String {
+        val connection = (java.net.URL(url).openConnection()
+            as java.net.HttpURLConnection).apply {
+            connectTimeout = 4_000
+            readTimeout = 4_000
+            instanceFollowRedirects = true
+            setRequestProperty(
+                "User-Agent",
+                "Mozilla/5.0 (Linux; Android 14) AppleWebKit/537.36 Chrome/126 Mobile Safari/537.36"
+            )
+            setRequestProperty("Accept", "application/json,text/plain,*/*")
+        }
+        return try {
+            connection.inputStream.bufferedReader().use { it.readText() }
+        } finally {
+            connection.disconnect()
+        }
+    }
+
+    private fun loadBitmap(url: String): Bitmap? {
+        val connection = runCatching {
+            (java.net.URL(url).openConnection()
+                as java.net.HttpURLConnection).apply {
+                connectTimeout = 4_000
+                readTimeout = 4_000
+                instanceFollowRedirects = true
+                setRequestProperty(
+                    "User-Agent",
+                    "Mozilla/5.0 (Linux; Android 14) AppleWebKit/537.36 Chrome/126 Mobile Safari/537.36"
+                )
+                setRequestProperty("Accept", "image/*,*/*;q=0.8")
+            }
+        }.getOrNull() ?: return null
+
+        return try {
+            if (connection.responseCode !in 200..299) return null
+            connection.inputStream.use { BitmapFactory.decodeStream(it) }
+        } catch (_: Throwable) {
+            null
+        } finally {
+            connection.disconnect()
+        }
     }
 }
-''')
 
-# The v4.8.1 UI check already requires DataOrigin.LIVE + today's source date,
-# so no visual/layout code is changed here.
+'''
+
+if badge_anchor not in u:
+    raise SystemExit("v4.8.4 MarketBadge insertion anchor not found")
+u = u.replace(badge_anchor, card_logo_code + badge_anchor, 1)
+
+ui.write_text(u)
+
+# Patch build identity only. High versionCode allows installation over the user's
+# later test builds without uninstalling; product behavior still equals v4.8.
 gradle = Path("source/app/build.gradle.kts")
 g = gradle.read_text()
-g = re.sub(r"versionCode\s*=\s*\d+", "versionCode = 26", g, count=1)
+g = re.sub(r"versionCode\s*=\s*\d+", "versionCode = 28", g, count=1)
 g = re.sub(
     r'versionName\s*=\s*"[^"]+"',
-    'versionName = "4.8.3-tsetmc-session-confirmed"',
+    'versionName = "4.8.4-one-line-symbol-logos"',
     g,
     count=1
 )
