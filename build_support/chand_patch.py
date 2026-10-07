@@ -864,3 +864,177 @@ if m:
     g = re.sub(r"versionCode\s*=\s*\d+", f"versionCode = {next_code}", g, count=1)
 g = re.sub(r'versionName\s*=\s*"[^"]+"', 'versionName = "4.2-investing-live"', g, count=1)
 gradle.write_text(g)
+
+
+# ---------------- Compact percent + market status labels ----------------
+ui = root / "MainActivity.kt"
+u = ui.read_text()
+
+old_header = """                Row(
+                    modifier = Modifier.fillMaxWidth(),
+                    verticalAlignment = Alignment.Top
+                ) {
+                    MarketBadge(item, Modifier.size(if (compact) 45.dp else 54.dp))
+                    Spacer(Modifier.weight(1f))
+                    Column(horizontalAlignment = Alignment.End) {
+                        Text(
+                            text = item.name,
+                            color = Color.White,
+                            fontSize = if (compact) 16.sp else 20.sp,
+                            lineHeight = if (compact) 19.sp else 23.sp,
+                            fontWeight = FontWeight.Bold,
+                            textAlign = TextAlign.End,
+                            maxLines = 1,
+                            overflow = TextOverflow.Ellipsis
+                        )
+                        Spacer(Modifier.height(3.dp))
+                        Text(
+                            text = item.code,
+                            color = ChandMuted,
+                            fontSize = if (compact) 13.sp else 16.sp,
+                            fontWeight = FontWeight.SemiBold,
+                            textAlign = TextAlign.End,
+                            maxLines = 1,
+                            overflow = TextOverflow.Ellipsis
+                        )
+                    }
+                }
+"""
+
+new_header = """                Row(
+                    modifier = Modifier.fillMaxWidth(),
+                    verticalAlignment = Alignment.Top
+                ) {
+                    Row(
+                        verticalAlignment = Alignment.CenterVertically
+                    ) {
+                        MarketBadge(item, Modifier.size(if (compact) 45.dp else 54.dp))
+                        Spacer(Modifier.width(if (compact) 4.dp else 6.dp))
+                        Text(
+                            text = compactPercent(item),
+                            color = trendColor(item),
+                            fontSize = if (compact) 9.sp else 10.sp,
+                            lineHeight = if (compact) 10.sp else 11.sp,
+                            fontWeight = FontWeight.SemiBold,
+                            maxLines = 1
+                        )
+                    }
+                    Spacer(Modifier.weight(1f))
+                    Column(horizontalAlignment = Alignment.End) {
+                        Text(
+                            text = item.name,
+                            color = Color.White,
+                            fontSize = if (compact) 16.sp else 20.sp,
+                            lineHeight = if (compact) 19.sp else 23.sp,
+                            fontWeight = FontWeight.Bold,
+                            textAlign = TextAlign.End,
+                            maxLines = 1,
+                            overflow = TextOverflow.Ellipsis
+                        )
+                        Spacer(Modifier.height(3.dp))
+                        Row(
+                            verticalAlignment = Alignment.CenterVertically,
+                            horizontalArrangement = Arrangement.spacedBy(5.dp)
+                        ) {
+                            MarketStatusLabel(item, compact)
+                            Text(
+                                text = item.code,
+                                color = ChandMuted,
+                                fontSize = if (compact) 13.sp else 16.sp,
+                                fontWeight = FontWeight.SemiBold,
+                                textAlign = TextAlign.End,
+                                maxLines = 1,
+                                overflow = TextOverflow.Ellipsis
+                            )
+                        }
+                    }
+                }
+"""
+
+if old_header not in u:
+    raise SystemExit("MarketCard header anchor not found")
+u = u.replace(old_header, new_header, 1)
+
+helper_anchor = """private fun trendColor(item: MarketItem): Color = when {
+    !item.isAvailable || item.change == 0.0 -> ChandMuted
+    item.change > 0.0 -> ChandUp
+    else -> ChandDown
+}
+
+"""
+
+helpers = r'''private fun compactPercent(item: MarketItem): String {
+    val value = item.changePercent
+    if (!value.isFinite()) return "0.00%"
+    return java.lang.String.format(
+        java.util.Locale.US,
+        if (value > 0.0) "+%.2f%%" else "%.2f%%",
+        value
+    )
+}
+
+@Composable
+private fun MarketStatusLabel(item: MarketItem, compact: Boolean) {
+    if (isMarketLive(item)) {
+        Surface(
+            color = Color(0xFF173A2C),
+            shape = RoundedCornerShape(5.dp)
+        ) {
+            Text(
+                text = "LIVE",
+                color = ChandUp,
+                fontSize = if (compact) 7.sp else 8.sp,
+                lineHeight = if (compact) 8.sp else 9.sp,
+                fontWeight = FontWeight.Bold,
+                letterSpacing = 0.35.sp,
+                modifier = Modifier.padding(horizontal = 4.dp, vertical = 2.dp)
+            )
+        }
+    } else {
+        Text(
+            text = "CLOSED",
+            color = ChandMuted,
+            fontSize = if (compact) 7.sp else 8.sp,
+            lineHeight = if (compact) 8.sp else 9.sp,
+            fontWeight = FontWeight.Medium,
+            letterSpacing = 0.25.sp,
+            maxLines = 1
+        )
+    }
+}
+
+private fun isMarketLive(item: MarketItem): Boolean {
+    if (!item.isAvailable || item.sourceUpdatedAtMillis <= 0L) return false
+    val now = System.currentTimeMillis()
+    val age = (now - item.sourceUpdatedAtMillis).coerceAtLeast(0L)
+
+    return when (item.source) {
+        ir.personal.chand.data.MarketSource.TRADINGVIEW -> {
+            // Investing.com globals: a recent last-trade timestamp means the market is active.
+            age <= 5L * 60L * 1000L
+        }
+        ir.personal.chand.data.MarketSource.TSETMC -> {
+            // TSETMC may have quieter symbols, so allow a wider activity window.
+            age <= 30L * 60L * 1000L
+        }
+        ir.personal.chand.data.MarketSource.TGJU -> {
+            age <= 20L * 60L * 1000L
+        }
+    }
+}
+
+'''
+
+if helper_anchor not in u:
+    raise SystemExit("trendColor helper anchor not found")
+u = u.replace(helper_anchor, helper_anchor + helpers, 1)
+ui.write_text(u)
+
+gradle = Path("source/app/build.gradle.kts")
+g = gradle.read_text()
+m = re.search(r"versionCode\s*=\s*(\d+)", g)
+if m:
+    next_code = max(int(m.group(1)), 16)
+    g = re.sub(r"versionCode\s*=\s*\d+", f"versionCode = {next_code}", g, count=1)
+g = re.sub(r'versionName\s*=\s*"[^"]+"', 'versionName = "4.3-status-percent"', g, count=1)
+gradle.write_text(g)
