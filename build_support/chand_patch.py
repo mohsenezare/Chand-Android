@@ -2172,3 +2172,162 @@ after = after.replace(
 card = before + after
 u = u[:card_start] + card + u[trend_start:]
 ui_file.write_text(u)
+
+
+# --- LOCKED v4.8.4 SEPARATED CATALOG REFRESH REPOSITORY ---
+repo_file = root / "data/MarketRepository.kt"
+r = repo_file.read_text()
+
+if "suspend fun refreshIranMarketCatalogStrict(" not in r:
+    insertion = r.find("    private suspend fun loadTsetmcCatalog(")
+    if insertion < 0:
+        raise SystemExit("v4.8.4 updater: loadTsetmcCatalog anchor not found")
+
+    methods = r'''    suspend fun refreshIranMarketCatalogStrict(
+        onProgress: (Int) -> Unit = {}
+    ): List<MarketDescriptor> = withContext(Dispatchers.IO) {
+        val all = linkedMapOf<String, MarketDescriptor>()
+        var page = 1
+        var finished = false
+
+        while (!finished && page <= 60) {
+            val result = fetchTgjuCatalogModule("markets.internal", "", page)
+            result.items
+                .filterNot(::isTgjuStockDescriptor)
+                .filterNot { descriptor ->
+                    descriptor.category.contains("جهانی") ||
+                        descriptor.category.contains("global", ignoreCase = true)
+                }
+                .filterNot { it.id in retiredIds }
+                .forEach { all[it.id] = it }
+
+            onProgress(
+                if (result.hasMore) (page * 12).coerceAtMost(92) else 100
+            )
+            finished = !result.hasMore
+            page += 1
+        }
+
+        if (all.isEmpty()) {
+            throw IllegalStateException("TGJU فهرست معتبری برای بازار ایران برنگرداند")
+        }
+
+        val items = all.values
+            .distinctBy(MarketDescriptor::id)
+            .sortedWith(compareBy<MarketDescriptor> { it.code }.thenBy { it.name })
+
+        synchronized(knownDescriptors) {
+            items.forEach { knownDescriptors[it.id] = it }
+        }
+        items
+    }
+
+    suspend fun refreshIranStockCatalogStrict(
+        onProgress: (Int) -> Unit = {}
+    ): List<MarketDescriptor> = withContext(Dispatchers.IO) {
+        onProgress(12)
+        var lastFailure: Throwable? = null
+
+        val cdnQuotes = runCatching {
+            TsetmcProtocol.parseCdnMarketWatch(httpGet(TSETMC_MARKET_WATCH, 15_000))
+        }.onFailure { lastFailure = it }.getOrNull().orEmpty()
+
+        onProgress(52)
+        val quotes = if (cdnQuotes.isNotEmpty()) {
+            cdnQuotes
+        } else {
+            runCatching {
+                TsetmcProtocol.parseLegacyInit(httpGet(TSETMC_LEGACY_INIT, 15_000)).quotes
+            }.onFailure { lastFailure = it }.getOrNull().orEmpty()
+        }
+
+        if (quotes.isEmpty()) {
+            throw IllegalStateException(
+                "TSETMC پاسخ معتبر برای فهرست بورس ایران نداد",
+                lastFailure
+            )
+        }
+
+        onProgress(82)
+        val descriptors = quotes
+            .mapNotNull(::descriptorFromTsetmcQuote)
+            .distinctBy(MarketDescriptor::id)
+            .sortedWith(compareBy<MarketDescriptor> { it.code }.thenBy { it.name })
+
+        if (descriptors.isEmpty()) {
+            throw IllegalStateException("فهرست بورس ایران خالی دریافت شد")
+        }
+
+        stockCatalogMutex.withLock {
+            stockCatalogCache = descriptors
+            stockCatalogLoadedAt = System.currentTimeMillis()
+        }
+        synchronized(knownDescriptors) {
+            descriptors.forEach { knownDescriptors[it.id] = it }
+        }
+        onProgress(100)
+        descriptors
+    }
+
+    suspend fun refreshGlobalInvestingCatalogStrict(
+        onProgress: (Int) -> Unit = {}
+    ): List<MarketDescriptor> = withContext(Dispatchers.IO) {
+        val seeds = (
+            ('A'..'Z').map { it.toString() } +
+            ('0'..'9').map { it.toString() } +
+            listOf(
+                "USD", "EUR", "GBP", "JPY", "CHF",
+                "BTC", "ETH", "XAU", "XAG",
+                "OIL", "BRENT", "INDEX", "ETF"
+            )
+        ).distinct()
+
+        val found = linkedMapOf<String, MarketDescriptor>()
+        TRADINGVIEW_MARKET_DESCRIPTORS.forEach { found[it.id] = it }
+
+        var successes = 0
+        var lastFailure: Throwable? = null
+
+        seeds.forEachIndexed { index, seed ->
+            runCatching {
+                searchTradingViewCatalog(seed)
+            }.onSuccess { page ->
+                successes += 1
+                page
+                    .filter { it.source == MarketSource.TRADINGVIEW }
+                    .forEach { found[it.id] = it }
+            }.onFailure {
+                lastFailure = it
+            }
+            onProgress(
+                (((index + 1) * 100.0) / seeds.size)
+                    .toInt()
+                    .coerceIn(0, 100)
+            )
+        }
+
+        if (successes == 0) {
+            throw IllegalStateException(
+                "Investing پاسخ معتبر برای بازار جهانی نداد",
+                lastFailure
+            )
+        }
+
+        val items = found.values
+            .distinctBy(MarketDescriptor::id)
+            .sortedWith(compareBy<MarketDescriptor> { it.code }.thenBy { it.name })
+
+        if (items.isEmpty()) {
+            throw IllegalStateException("فهرست بازار جهانی خالی دریافت شد")
+        }
+
+        synchronized(knownDescriptors) {
+            items.forEach { knownDescriptors[it.id] = it }
+        }
+        items
+    }
+
+'''
+    r = r[:insertion] + methods + r[insertion:]
+
+repo_file.write_text(r)
