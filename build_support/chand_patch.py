@@ -2307,21 +2307,24 @@ private var savedGlobalCatalog: List<MarketDescriptor> = loadSavedGlobalCatalog(
 # already persisted by the existing rememberSelection path, so startup behavior
 # stays untouched.
 
-catalog_block = """val page = when (source) {
-CatalogSource.MARKETS -> repository.searchMarkets(normalizedQuery, catalogPage)
-CatalogSource.STOCKS -> repository.searchStocks(normalizedQuery, catalogPage)
-}
-page.items.forEach { descriptorCache[it.id] = it }
-val latest = _uiState.value
-if (latest.catalogSource != source || latest.catalogQuery != normalizedQuery) return@launch
-val merged = if (loadMore) latest.catalogItems + page.items else page.items
-"""
 if "val savedItems = if (source == CatalogSource.MARKETS)" not in vv:
-    if catalog_block not in vv:
-        raise SystemExit("symbol updater: loadCatalog block anchor not found")
-    vv = vv.replace(
-        catalog_block,
-        """val page = when (source) {
+    import re as _re
+    catalog_pattern = _re.compile(
+        r"""val\s+page\s*=\s*when\s*\(source\)\s*\{\s*
+        CatalogSource\.MARKETS\s*->\s*repository\.searchMarkets\(normalizedQuery,\s*catalogPage\)\s*
+        CatalogSource\.STOCKS\s*->\s*repository\.searchStocks\(normalizedQuery,\s*catalogPage\)\s*
+        \}\s*
+        page\.items\.forEach\s*\{\s*descriptorCache\[it\.id\]\s*=\s*it\s*\}\s*
+        val\s+latest\s*=\s*_uiState\.value\s*
+        if\s*\(latest\.catalogSource\s*!=\s*source\s*\|\|\s*latest\.catalogQuery\s*!=\s*normalizedQuery\)\s*return@launch\s*
+        val\s+merged\s*=\s*if\s*\(loadMore\)\s*latest\.catalogItems\s*\+\s*page\.items\s*else\s*page\.items
+        """,
+        _re.VERBOSE
+    )
+    match = catalog_pattern.search(vv)
+    if not match:
+        raise SystemExit("symbol updater: loadCatalog flexible anchor not found")
+    catalog_replacement = """val page = when (source) {
 CatalogSource.MARKETS -> repository.searchMarkets(normalizedQuery, catalogPage)
 CatalogSource.STOCKS -> repository.searchStocks(normalizedQuery, catalogPage)
 }
@@ -2334,10 +2337,8 @@ val currentPageItems = (page.items + savedItems).distinctBy(MarketDescriptor::id
 currentPageItems.forEach { descriptorCache[it.id] = it }
 val latest = _uiState.value
 if (latest.catalogSource != source || latest.catalogQuery != normalizedQuery) return@launch
-val merged = if (loadMore) latest.catalogItems + currentPageItems else currentPageItems
-""",
-        1
-    )
+val merged = if (loadMore) latest.catalogItems + currentPageItems else currentPageItems"""
+    vv = vv[:match.start()] + catalog_replacement + vv[match.end():]
 
 action_anchor = "fun setGridMode(enabled: Boolean) = updateSettings { copy(gridMode = enabled) }\n"
 if "fun updateSymbolCatalog()" not in vv:
