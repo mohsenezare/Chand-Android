@@ -1814,3 +1814,422 @@ g = re.sub(
     count=1
 )
 gradle.write_text(g)
+
+
+# ---------------- v4.8.3 TSETMC session-confirmed feed ----------------
+# Bulk MarketWatch can expose zero/ambiguous dEven and stale hEven values for
+# late-opening instruments. Do not call a TSETMC card LIVE until a direct
+# ClosingPriceInfo response confirms a real trade for today's Gregorian dEven.
+# Once confirmed, bulk updates are accepted only if their event time never moves
+# backwards. Symbols whose bulk feed lags direct data are promoted to direct mode.
+
+tse_client = root / "data/TsetmcLiveClient.kt"
+tse_client.write_text(r'''package ir.personal.chand.data
+
+import okhttp3.OkHttpClient
+import okhttp3.Request
+import org.json.JSONArray
+import org.json.JSONObject
+import java.io.Closeable
+import java.time.LocalDate
+import java.time.LocalDateTime
+import java.time.LocalTime
+import java.time.ZoneId
+import java.util.LinkedHashMap
+import java.util.LinkedHashSet
+import java.util.concurrent.Executors
+import java.util.concurrent.ScheduledFuture
+import java.util.concurrent.TimeUnit
+import kotlin.math.abs
+
+/**
+ * TSETMC near-real-time client.
+ *
+ * Key rule: a symbol is never considered live merely because it is present in
+ * MarketWatch. At least one direct ClosingPriceInfo response must confirm an
+ * actual trade with today's dEven. This is important for late-opening gold and
+ * commodity funds (e.g. عیار), whose MarketWatch row can carry yesterday's
+ * values before their own session begins.
+ */
+class TsetmcLiveClient(
+    private val httpClient: OkHttpClient,
+    insCodes: List<String>,
+    private val onState: (LiveConnectionState) -> Unit,
+    private val onTicks: (List<StreamTick>) -> Unit
+) : Closeable {
+    private val watched = insCodes
+        .map(String::trim)
+        .filter { it.isNotBlank() && it.all(Char::isDigit) }
+        .distinct()
+
+    private val watchedSet = watched.toHashSet()
+    private val scheduler = Executors.newSingleThreadScheduledExecutor { task ->
+        Thread(task, "chand-tsetmc-live").apply { isDaemon = true }
+    }
+
+    @Volatile private var closed = false
+    private var future: ScheduledFuture<*>? = null
+    private var auditCursor = 0
+    private var consecutiveFailures = 0
+
+    // Gregorian YYYYMMDD confirmed by the direct quote endpoint.
+    private val confirmedDateByCode = HashMap<String, Long>()
+
+    // If direct quote is newer/different than bulk, keep this symbol on direct
+    // polling for the remainder of the session.
+    private val directPreferred = LinkedHashSet<String>()
+
+    // Never allow an older source event to overwrite a newer one.
+    private val lastSourceMillis = HashMap<String, Long>()
+
+    fun start() {
+        if (closed || watched.isEmpty()) return
+        onState(LiveConnectionState.CONNECTING)
+        future = scheduler.scheduleWithFixedDelay(
+            { pollSafely() },
+            0L,
+            POLL_INTERVAL_MS,
+            TimeUnit.MILLISECONDS
+        )
+    }
+
+    private fun pollSafely() {
+        if (closed) return
+
+        val today = LocalDate.now(TEHRAN_ZONE)
+        val todayKey = today.year.toLong() * 10_000L + today.monthValue * 100L + today.dayOfMonth
+
+        // Reset per-session confirmation after the Tehran trading date changes.
+        confirmedDateByCode.entries.removeIf { it.value != todayKey }
+        if (confirmedDateByCode.isEmpty()) {
+            directPreferred.retainAll(emptySet())
+            lastSourceMillis.clear()
+        }
+
+        try {
+            val bulk = fetchBulkCandidates(today)
+            val directTargets = buildDirectTargets(bulk.keys, todayKey)
+            val direct = LinkedHashMap<String, StreamTick>()
+
+            directTargets.forEach { code ->
+                fetchDirectTick(code, todayKey)?.let { tick ->
+                    confirmedDateByCode[code] = todayKey
+                    direct[code] = tick
+
+                    val bulkTick = bulk[code]
+                    if (bulkTick == null ||
+                        tick.sourceUpdatedAtMillis > bulkTick.sourceUpdatedAtMillis + BULK_LAG_TOLERANCE_MS ||
+                        abs(tick.price - bulkTick.price) >= PRICE_DIFFERENCE_EPSILON
+                    ) {
+                        directPreferred += code
+                    }
+                }
+            }
+
+            val emitted = ArrayList<StreamTick>()
+            watched.forEach { code ->
+                val confirmedToday = confirmedDateByCode[code] == todayKey
+                val directTick = direct[code]
+                val bulkTick = bulk[code]
+
+                val chosen = when {
+                    directTick != null -> directTick
+                    !confirmedToday -> null
+                    code in directPreferred -> {
+                        // A known-lagging symbol must not regress to a stale bulk row.
+                        bulkTick?.takeIf {
+                            it.sourceUpdatedAtMillis >= (lastSourceMillis[code] ?: 0L)
+                        }
+                    }
+                    else -> bulkTick
+                } ?: return@forEach
+
+                val previousTime = lastSourceMillis[code] ?: 0L
+                if (chosen.sourceUpdatedAtMillis < previousTime) return@forEach
+
+                lastSourceMillis[code] = maxOf(previousTime, chosen.sourceUpdatedAtMillis)
+                emitted += chosen
+            }
+
+            if (emitted.isNotEmpty()) onTicks(emitted)
+
+            consecutiveFailures = 0
+            onState(
+                if (confirmedDateByCode.isNotEmpty()) {
+                    LiveConnectionState.POLLING
+                } else {
+                    LiveConnectionState.CONNECTING
+                }
+            )
+        } catch (_: Throwable) {
+            consecutiveFailures++
+            onState(
+                if (consecutiveFailures >= OFFLINE_AFTER_FAILURES) {
+                    LiveConnectionState.OFFLINE
+                } else {
+                    LiveConnectionState.POLLING
+                }
+            )
+        }
+    }
+
+    private fun fetchBulkCandidates(today: LocalDate): Map<String, StreamTick> {
+        val root = JSONObject(get(MARKET_WATCH_URL))
+        val rows = root.optJSONArray("marketwatch")
+            ?: root.optJSONArray("marketWatch")
+            ?: root.optJSONArray("data")
+            ?: JSONArray()
+
+        val result = LinkedHashMap<String, StreamTick>()
+        for (index in 0 until rows.length()) {
+            val row = rows.optJSONObject(index) ?: continue
+            val code = stringAny(
+                row,
+                "insCode", "inscode", "instrumentId", "instrumentID"
+            ).trim()
+            if (code !in watchedSet) continue
+
+            parseBulkTick(code, row, today)?.let { result[code] = it }
+        }
+        return result
+    }
+
+    private fun parseBulkTick(
+        code: String,
+        row: JSONObject,
+        today: LocalDate
+    ): StreamTick? {
+        val dEven = longAny(row, "dEven", "deven", "date") ?: 0L
+        val hEven = longAny(row, "hEven", "heven", "lastHEven", "lastHeven") ?: 0L
+        val last = numberAny(row, "pDrCotVal", "pl", "last", "lastPrice") ?: 0.0
+        val trades = numberAny(row, "zTotTran", "tno", "tradeCount") ?: 0.0
+        val volume = numberAny(row, "qTotTran5J", "tvol", "tradeVolume") ?: 0.0
+
+        if (hEven <= 0L || last <= 0.0 || (trades <= 0.0 && volume <= 0.0)) return null
+
+        val todayKey = today.year.toLong() * 10_000L + today.monthValue * 100L + today.dayOfMonth
+        if (dEven > 0L && dEven != todayKey) return null
+
+        val sourceMillis = if (dEven > 0L) {
+            tehranMillis(dEven, hEven)
+        } else {
+            // dEven=0 is ambiguous. We keep this as a candidate only; it cannot
+            // become LIVE until a direct quote confirms today's session.
+            tehranMillis(todayKey, hEven)
+        } ?: return null
+
+        // A source time in the future is a classic sign of carrying yesterday's
+        // hEven into today's pre-open row.
+        if (sourceMillis > System.currentTimeMillis() + FUTURE_TOLERANCE_MS) return null
+
+        return makeTick(code, row, last, sourceMillis)
+    }
+
+    private fun buildDirectTargets(
+        bulkCodes: Set<String>,
+        todayKey: Long
+    ): LinkedHashSet<String> {
+        val targets = LinkedHashSet<String>()
+
+        // Symbols already proven to have a lagging bulk row stay on direct mode.
+        targets.addAll(directPreferred)
+
+        // Anything missing from bulk needs direct inspection.
+        watched.filterNot(bulkCodes::contains).forEach(targets::add)
+
+        // Most importantly: until each visible TSETMC symbol has one confirmed
+        // direct trade today, audit a rotating subset every poll. This means a
+        // fund that opens later switches to live automatically within a few sec.
+        val unconfirmed = watched.filter { confirmedDateByCode[it] != todayKey }
+        if (unconfirmed.isNotEmpty()) {
+            repeat(minOf(DIRECT_CONFIRM_PER_POLL, unconfirmed.size)) {
+                val code = unconfirmed[auditCursor.mod(unconfirmed.size)]
+                auditCursor = (auditCursor + 1).mod(unconfirmed.size)
+                targets += code
+            }
+        } else if (watched.isNotEmpty()) {
+            // Periodic direct audit detects a bulk feed that gets stuck mid-session.
+            repeat(minOf(DIRECT_AUDIT_PER_POLL, watched.size)) {
+                val code = watched[auditCursor.mod(watched.size)]
+                auditCursor = (auditCursor + 1).mod(watched.size)
+                targets += code
+            }
+        }
+
+        return targets
+    }
+
+    private fun fetchDirectTick(code: String, todayKey: Long): StreamTick? {
+        return runCatching {
+            val root = JSONObject(get("$CLOSING_INFO_URL/$code"))
+            val row = root.optJSONObject("closingPriceInfo")
+                ?: root.optJSONObject("data")
+                ?: return@runCatching null
+
+            val dEven = longAny(row, "dEven", "deven", "date") ?: 0L
+            val eventTime = longAny(
+                row,
+                "lastHEven", "lastHeven", "hEven", "heven"
+            ) ?: 0L
+            val last = numberAny(row, "pDrCotVal", "last", "lastPrice") ?: 0.0
+            val trades = numberAny(row, "zTotTran", "tradeCount") ?: 0.0
+            val volume = numberAny(row, "qTotTran5J", "tradeVolume") ?: 0.0
+
+            // This is the authoritative session gate.
+            if (dEven != todayKey ||
+                eventTime <= 0L ||
+                last <= 0.0 ||
+                (trades <= 0.0 && volume <= 0.0)
+            ) return@runCatching null
+
+            val sourceMillis = tehranMillis(dEven, eventTime) ?: return@runCatching null
+            if (sourceMillis > System.currentTimeMillis() + FUTURE_TOLERANCE_MS) {
+                return@runCatching null
+            }
+
+            makeTick(code, row, last, sourceMillis)
+        }.getOrNull()
+    }
+
+    private fun makeTick(
+        code: String,
+        row: JSONObject,
+        last: Double,
+        sourceMillis: Long
+    ): StreamTick {
+        val yesterday = numberAny(row, "priceYesterday", "py", "yClose", "yesterdayPrice")
+        val change = numberAny(row, "priceChange", "change")
+            ?: yesterday?.takeIf { it > 0.0 }?.let { last - it }
+            ?: 0.0
+        val percent = numberAny(row, "priceChangePercent", "changePercent", "percent")
+            ?: yesterday?.takeIf { it > 0.0 }?.let { change / it * 100.0 }
+            ?: 0.0
+
+        return StreamTick(
+            sourceKey = code,
+            itemId = "tsetmc:$code",
+            price = last,
+            high = numberAny(row, "priceMax", "pmax", "high")?.takeIf { it > 0.0 } ?: last,
+            low = numberAny(row, "priceMin", "pmin", "low")?.takeIf { it > 0.0 } ?: last,
+            open = numberAny(row, "priceFirst", "pf", "open")?.takeIf { it > 0.0 } ?: last,
+            change = change,
+            changePercent = percent,
+            direction = when {
+                change > 0.0 -> "high"
+                change < 0.0 -> "low"
+                else -> "same"
+            },
+            sourceUpdatedAtMillis = sourceMillis,
+            bid = null,
+            ask = null
+        )
+    }
+
+    private fun tehranMillis(dEven: Long, hEven: Long): Long? {
+        if (dEven <= 0L || hEven <= 0L) return null
+        val year = (dEven / 10_000L).toInt()
+        val month = ((dEven / 100L) % 100L).toInt()
+        val day = (dEven % 100L).toInt()
+        val hour = (hEven / 10_000L).toInt()
+        val minute = ((hEven / 100L) % 100L).toInt()
+        val second = (hEven % 100L).toInt()
+
+        return runCatching {
+            LocalDateTime.of(
+                LocalDate.of(year, month, day),
+                LocalTime.of(hour, minute, second)
+            ).atZone(TEHRAN_ZONE).toInstant().toEpochMilli()
+        }.getOrNull()
+    }
+
+    private fun get(url: String): String {
+        val request = Request.Builder()
+            .url(url)
+            .header("Accept", "application/json,text/plain,*/*")
+            .header("Cache-Control", "no-cache")
+            .header("Pragma", "no-cache")
+            .header("User-Agent", HTTP_USER_AGENT)
+            .build()
+
+        return httpClient.newCall(request).execute().use { response ->
+            if (!response.isSuccessful) error("TSETMC HTTP " + response.code)
+            response.body?.string().orEmpty().also {
+                if (it.isBlank() ||
+                    it.contains("General Error Detected", ignoreCase = true) ||
+                    it.contains("مسدود", ignoreCase = true)
+                ) {
+                    error("Empty/blocked TSETMC response")
+                }
+            }
+        }
+    }
+
+    override fun close() {
+        closed = true
+        future?.cancel(true)
+        future = null
+        scheduler.shutdownNow()
+    }
+
+    private fun stringAny(value: JSONObject, vararg keys: String): String {
+        for (key in keys) {
+            val raw = value.opt(key)
+            if (raw != null && raw !== JSONObject.NULL) {
+                val text = raw.toString().trim()
+                if (text.isNotBlank()) return text
+            }
+        }
+        return ""
+    }
+
+    private fun numberAny(value: JSONObject, vararg keys: String): Double? {
+        for (key in keys) {
+            val raw = value.opt(key)
+            val number = when (raw) {
+                is Number -> raw.toDouble()
+                null, JSONObject.NULL -> null
+                else -> raw.toString().replace(",", "").trim().toDoubleOrNull()
+            }
+            if (number != null && number.isFinite()) return number
+        }
+        return null
+    }
+
+    private fun longAny(value: JSONObject, vararg keys: String): Long? =
+        numberAny(value, *keys)?.toLong()
+
+    companion object {
+        private val TEHRAN_ZONE = ZoneId.of("Asia/Tehran")
+
+        private const val POLL_INTERVAL_MS = 900L
+        private const val DIRECT_CONFIRM_PER_POLL = 3
+        private const val DIRECT_AUDIT_PER_POLL = 1
+        private const val BULK_LAG_TOLERANCE_MS = 3_000L
+        private const val FUTURE_TOLERANCE_MS = 90_000L
+        private const val PRICE_DIFFERENCE_EPSILON = 0.01
+        private const val OFFLINE_AFTER_FAILURES = 4
+
+        private const val HTTP_USER_AGENT =
+            "Mozilla/5.0 (Linux; Android 14) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/126 Mobile Safari/537.36"
+
+        private const val MARKET_WATCH_URL =
+            "https://cdn.tsetmc.com/api/ClosingPrice/GetMarketWatch?market=0&industrialGroup=&paperTypes%5B0%5D=1&paperTypes%5B1%5D=2&paperTypes%5B2%5D=3&paperTypes%5B3%5D=4&paperTypes%5B4%5D=5&paperTypes%5B5%5D=6&paperTypes%5B6%5D=7&paperTypes%5B7%5D=8&paperTypes%5B8%5D=9&showTraded=false&withBestLimits=false&hEven=0&RefID=0"
+
+        private const val CLOSING_INFO_URL =
+            "https://cdn.tsetmc.com/api/ClosingPrice/GetClosingPriceInfo"
+    }
+}
+''')
+
+# The v4.8.1 UI check already requires DataOrigin.LIVE + today's source date,
+# so no visual/layout code is changed here.
+gradle = Path("source/app/build.gradle.kts")
+g = gradle.read_text()
+g = re.sub(r"versionCode\s*=\s*\d+", "versionCode = 26", g, count=1)
+g = re.sub(
+    r'versionName\s*=\s*"[^"]+"',
+    'versionName = "4.8.3-tsetmc-session-confirmed"',
+    g,
+    count=1
+)
+gradle.write_text(g)
