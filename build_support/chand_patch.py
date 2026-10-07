@@ -2085,3 +2085,90 @@ g = re.sub(
     count=1
 )
 gradle.write_text(g)
+
+
+# --- LOCKED v4.8.4 LIGHT MODE CARD POLISH ---
+# Only LIGHT mode card/background colors and shadow are changed.
+ui_file = root / "MainActivity.kt"
+u = ui_file.read_text()
+
+if "import androidx.compose.ui.graphics.luminance\n" not in u:
+    anchor = "import androidx.compose.ui.graphics.Color\n"
+    if anchor not in u:
+        raise SystemExit("v4.8.4 light: Color import anchor not found")
+    u = u.replace(anchor, anchor + "import androidx.compose.ui.graphics.luminance\n", 1)
+
+grid_start = u.find("@Composable\nprivate fun MarketGrid(")
+card_start = u.find("@Composable\nprivate fun MarketCard(", grid_start + 1)
+if grid_start < 0 or card_start <= grid_start:
+    raise SystemExit("v4.8.4 light: MarketGrid/MarketCard not found")
+
+grid = u[grid_start:card_start]
+if "0xFFE7E6E3" not in grid:
+    grid = grid.replace(
+        "modifier = Modifier.fillMaxSize()",
+        """modifier = Modifier
+            .fillMaxSize()
+            .background(
+                if (MaterialTheme.colorScheme.background.luminance() > 0.5f)
+                    Color(0xFFE7E6E3)
+                else
+                    Color.Transparent
+            )""",
+        1
+    )
+u = u[:grid_start] + grid + u[card_start:]
+
+card_start = u.find("@Composable\nprivate fun MarketCard(")
+trend_start = u.find("private fun trendColor(", card_start + 1)
+if card_start < 0 or trend_start <= card_start:
+    raise SystemExit("v4.8.4 light: MarketCard range not found")
+card = u[card_start:trend_start]
+
+if "val lightMode = MaterialTheme.colorScheme.background.luminance() > 0.5f" not in card:
+    sig_end = card.find(") {")
+    if sig_end < 0:
+        raise SystemExit("v4.8.4 light: MarketCard signature end not found")
+    sig_end += 3
+    card = card[:sig_end] + "\n    val lightMode = MaterialTheme.colorScheme.background.luminance() > 0.5f" + card[sig_end:]
+
+card = card.replace(
+    "colors = CardDefaults.cardColors(containerColor = ChandCard),",
+    """colors = CardDefaults.cardColors(
+            containerColor = if (lightMode) Color(0xFFFDFDFC) else ChandCard
+        ),""",
+    1
+)
+card = card.replace(
+    "elevation = CardDefaults.cardElevation(defaultElevation = 0.dp),",
+    "elevation = CardDefaults.cardElevation(defaultElevation = if (lightMode) 6.dp else 0.dp),",
+    1
+)
+
+name_pos = card.find("text = item.name,")
+if name_pos < 0:
+    raise SystemExit("v4.8.4 light: item.name not found")
+before = card[:name_pos]
+after = card[name_pos:]
+after = after.replace(
+    "color = Color.White,",
+    "color = if (lightMode) Color(0xFF111111) else Color.White,",
+    1
+)
+after = after.replace(
+    "color = ChandMuted,",
+    "color = if (lightMode) Color(0xFF8D8D92) else ChandMuted,",
+    1
+)
+after = after.replace(
+    "color = if (item.isAvailable) Color.White else ChandMuted,",
+    """color = if (item.isAvailable) {
+                        if (lightMode) Color(0xFF050505) else Color.White
+                    } else {
+                        if (lightMode) Color(0xFF9A9A9E) else ChandMuted
+                    },""",
+    1
+)
+card = before + after
+u = u[:card_start] + card + u[trend_start:]
+ui_file.write_text(u)
