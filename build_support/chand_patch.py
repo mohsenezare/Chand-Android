@@ -2136,6 +2136,17 @@ tail = tail.replace(
     1
 )
 locked = locked[:card_start] + head + tail + locked[trend_start:]
+# Required only for the circular visual mask; no behavior change.
+if "import androidx.compose.ui.draw.clip\n" not in locked:
+    import_anchor = "import androidx.compose.ui.Modifier\n"
+    if import_anchor not in locked:
+        raise SystemExit("locked polish: Modifier import anchor not found")
+    locked = locked.replace(
+        import_anchor,
+        import_anchor + "import androidx.compose.ui.draw.clip\n",
+        1
+    )
+
 ui.write_text(locked)
 
 # Installation-only bump so it can install over the previous test APK.
