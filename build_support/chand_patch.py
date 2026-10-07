@@ -2582,16 +2582,18 @@ onManage: () -> Unit
     uu = uu[:match.start()] + signature_new + uu[match.end():]
 
 if "بررسی و به‌روزرسانی نمادها" not in uu:
-    import re as _re
-    manage_pattern = _re.compile(
-        r'''TextButton\s*\(\s*onClick\s*=\s*onManage\s*,\s*modifier\s*=\s*Modifier\.fillMaxWidth\(\)\s*\)\s*\{\s*
-        Text\s*\(\s*"مدیریت قیمت‌ها"\s*\)\s*
-        \}''',
-        _re.VERBOSE
-    )
-    manage_match = manage_pattern.search(uu)
-    if not manage_match:
-        raise SystemExit("symbol updater: flexible settings manage button anchor not found")
+    settings_start = uu.find("private fun SettingsDialog(")
+    settings_end = uu.find("@Composable\nprivate fun ManageItemsDialog(", settings_start)
+    if settings_start < 0 or settings_end < 0:
+        raise SystemExit("symbol updater: SettingsDialog range not found")
+
+    manage_click = uu.find("onClick = onManage", settings_start, settings_end)
+    if manage_click < 0:
+        raise SystemExit("symbol updater: onManage click not found")
+    manage_button_start = uu.rfind("TextButton", settings_start, manage_click)
+    if manage_button_start < 0:
+        raise SystemExit("symbol updater: manage TextButton start not found")
+
     update_ui = r'''Spacer(Modifier.height(12.dp))
 HorizontalDivider(color = Color(0xFF343438))
 Text(
@@ -2611,13 +2613,16 @@ state.symbolUpdateSucceeded == false -> Color(0xFF301619)
 state.symbolUpdateRunning || state.symbolUpdateSucceeded == true -> Color(0xFF10291D)
 else -> Color(0xFF232428)
 }
-val progressFraction = (state.symbolUpdateProgress.coerceIn(0, 100) / 100f)
+val progressFraction = state.symbolUpdateProgress.coerceIn(0, 100) / 100f
 
 Surface(
 modifier = Modifier.fillMaxWidth(),
 shape = RoundedCornerShape(16.dp),
 color = updateSurface,
-border = androidx.compose.foundation.BorderStroke(1.dp, updateAccent.copy(alpha = .78f))
+border = androidx.compose.foundation.BorderStroke(
+1.dp,
+updateAccent.copy(alpha = .78f)
+)
 ) {
 Column(Modifier.padding(12.dp)) {
 Row(
@@ -2631,7 +2636,10 @@ state.symbolUpdateSucceeded == true -> "به‌روزرسانی موفق"
 state.symbolUpdateSucceeded == false -> "به‌روزرسانی ناموفق"
 else -> "دریافت آخرین فهرست نمادها"
 },
-color = if (state.symbolUpdateSucceeded == null && !state.symbolUpdateRunning) Color.White else updateAccent,
+color = if (
+state.symbolUpdateSucceeded == null &&
+!state.symbolUpdateRunning
+) Color.White else updateAccent,
 fontWeight = FontWeight.Bold,
 modifier = Modifier.weight(1f)
 )
@@ -2665,7 +2673,8 @@ state.symbolUpdateMessage?.let { message ->
 Spacer(Modifier.height(9.dp))
 Text(
 message,
-color = if (state.symbolUpdateSucceeded == false) Color(0xFFFFA2A8) else Color(0xFFD7D7DA),
+color = if (state.symbolUpdateSucceeded == false)
+Color(0xFFFFA2A8) else Color(0xFFD7D7DA),
 fontSize = 12.sp,
 lineHeight = 17.sp
 )
@@ -2678,8 +2687,12 @@ enabled = !state.symbolUpdateRunning,
 modifier = Modifier.fillMaxWidth()
 ) {
 Text(
-if (state.symbolUpdateRunning) "در حال دریافت…" else "بررسی و به‌روزرسانی نمادها",
-color = if (state.symbolUpdateRunning) ChandMuted else updateAccent,
+if (state.symbolUpdateRunning)
+"در حال دریافت…"
+else
+"بررسی و به‌روزرسانی نمادها",
+color = if (state.symbolUpdateRunning)
+ChandMuted else updateAccent,
 fontWeight = FontWeight.Bold
 )
 }
@@ -2687,10 +2700,8 @@ fontWeight = FontWeight.Bold
 }
 
 Spacer(Modifier.height(6.dp))
-TextButton(onClick = onManage, modifier = Modifier.fillMaxWidth()) {
-Text("مدیریت قیمت‌ها")
-}'''
-    uu = uu[:manage_match.start()] + update_ui + uu[manage_match.end():]
+'''
+    uu = uu[:manage_button_start] + update_ui + uu[manage_button_start:]
 
 ui_file.write_text(uu)
 
