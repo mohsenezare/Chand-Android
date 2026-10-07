@@ -10,6 +10,11 @@ on:
       - 'payload/**'
       - 'build_support/**'
       - '.github/workflows/build-chand.yml'
+  pull_request:
+    branches: [ main ]
+    paths:
+      - 'build_support/**'
+      - '.github/workflows/build-chand.yml'
   workflow_dispatch:
 
 jobs:
