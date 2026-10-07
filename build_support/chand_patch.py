@@ -1278,47 +1278,37 @@ g = re.sub(r'versionName\s*=\s*"[^"]+"', 'versionName = "4.6-layout-fix"', g, co
 gradle.write_text(g)
 
 
-# ---------------- v4.7 price position fix ----------------
+# ---------------- v4.8 final safe-card fix ----------------
+# Keep the stable v4.6 card composition. Do not translate the price block upward:
+# that was the regression which clipped the bottom of large prices.
 ui = root / "MainActivity.kt"
 u = ui.read_text()
 
-if "import androidx.compose.foundation.layout.offset\n" not in u:
-    anchor = "import androidx.compose.foundation.layout.navigationBarsPadding\n"
-    if anchor not in u:
-        raise SystemExit("v4.7 offset import anchor not found")
-    u = u.replace(anchor, anchor + "import androidx.compose.foundation.layout.offset\n", 1)
+# Slightly taller grid cards preserve the iOS-like proportions while giving
+# large Persian/Latin price glyphs enough vertical room.
+u = u.replace("Modifier.aspectRatio(1.12f)", "Modifier.aspectRatio(1.04f)", 1)
 
-u = u.replace("Modifier.aspectRatio(1.12f)", "Modifier.aspectRatio(1.18f)", 1)
-u = u.replace("else Modifier.heightIn(min = 220.dp)", "else Modifier.heightIn(min = 230.dp)", 1)
-u = u.replace("else Modifier.heightIn(min = 210.dp)", "else Modifier.heightIn(min = 230.dp)", 1)
+# Keep list cards at the already-safe v4.6 height.
+u = u.replace("else Modifier.heightIn(min = 205.dp)", "else Modifier.heightIn(min = 220.dp)", 1)
+u = u.replace("else Modifier.heightIn(min = 210.dp)", "else Modifier.heightIn(min = 220.dp)", 1)
 
-old = """                Column(
-                    modifier = Modifier
-                        .fillMaxWidth()
-                        .padding(top = if (compact) 8.dp else 10.dp, bottom = 1.dp)
-                ) {
-"""
-new = """                Column(
-                    modifier = Modifier
-                        .fillMaxWidth()
-                        .offset(y = if (compact) (-10).dp else (-12).dp)
-                        .padding(top = if (compact) 6.dp else 8.dp, bottom = 12.dp)
-                ) {
-"""
+# Add a small bottom safe area; do not use Modifier.offset here.
+old = """.padding(top = if (compact) 8.dp else 10.dp, bottom = 1.dp)"""
+new = """.padding(
+                            top = if (compact) 8.dp else 10.dp,
+                            bottom = if (compact) 6.dp else 8.dp
+                        )"""
 if old not in u:
-    raise SystemExit("v4.7 bottom price column anchor not found")
+    raise SystemExit("v4.8 bottom padding anchor not found")
 u = u.replace(old, new, 1)
+
+# Relax line height a little so heavy price glyphs are not cropped by their text box.
 u = u.replace(
-    "lineHeight = if (compact) 17.sp else 22.sp,",
-    "lineHeight = if (compact) 16.sp else 21.sp,",
+    "lineHeight = priceFontSize * 1.08f,",
+    "lineHeight = priceFontSize * 1.14f,",
     1
 )
-u = u.replace(
-    "Spacer(Modifier.height(if (compact) 4.dp else 6.dp))",
-    "Spacer(Modifier.height(if (compact) 3.dp else 5.dp))",
-    1
-)
-u = u.replace("letterSpacing = (-0.55).sp,", "letterSpacing = (-0.50).sp,", 1)
+
 ui.write_text(u)
 
 gradle = Path("source/app/build.gradle.kts")
@@ -1327,5 +1317,10 @@ m = re.search(r"versionCode\s*=\s*(\d+)", g)
 if m:
     next_code = max(int(m.group(1)) + 1, 20)
     g = re.sub(r"versionCode\s*=\s*\d+", f"versionCode = {next_code}", g, count=1)
-g = re.sub(r'versionName\s*=\s*"[^"]+"', 'versionName = "4.7-price-up"', g, count=1)
+g = re.sub(
+    r'versionName\s*=\s*"[^"]+"',
+    'versionName = "4.8-final-safe-cards"',
+    g,
+    count=1
+)
 gradle.write_text(g)
