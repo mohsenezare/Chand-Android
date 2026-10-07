@@ -1120,3 +1120,159 @@ if m:
     g = re.sub(r"versionCode\s*=\s*\d+", f"versionCode = {next_code}", g, count=1)
 g = re.sub(r'versionName\s*=\s*"[^"]+"', 'versionName = "4.5-price-safe-info-row"', g, count=1)
 gradle.write_text(g)
+
+
+# ---------------- v4.6 final adaptive layout fix ----------------
+ui = root / "MainActivity.kt"
+u = ui.read_text()
+
+# Give list cards enough vertical room so long names, source/status and prices never overlap.
+u = u.replace("else Modifier.heightIn(min = 205.dp)", "else Modifier.heightIn(min = 220.dp)")
+u = u.replace("else Modifier.heightIn(min = 210.dp)", "else Modifier.heightIn(min = 220.dp)")
+
+card_start = u.find("@Composable\nprivate fun MarketCard(")
+trend_start = u.find("private fun trendColor(", card_start + 1)
+if card_start < 0 or trend_start <= card_start:
+    raise SystemExit("v4.6 MarketCard function range not found")
+
+final_card = """@Composable
+private fun MarketCard(
+    item: MarketItem,
+    gridMode: Boolean,
+    modifier: Modifier = Modifier,
+    onClick: () -> Unit
+) {
+    Card(
+        onClick = onClick,
+        shape = RoundedCornerShape(if (gridMode) 28.dp else 24.dp),
+        colors = CardDefaults.cardColors(containerColor = ChandCard),
+        elevation = CardDefaults.cardElevation(defaultElevation = 0.dp),
+        modifier = modifier
+    ) {
+        BoxWithConstraints(Modifier.fillMaxSize()) {
+            val compact = maxWidth < 185.dp
+            val priceText = MarketFormatting.price(item)
+            val changeText = MarketFormatting.change(item)
+            val longName = item.name.length > if (compact) 11 else 16
+            val nameFontSize = when {
+                compact && longName -> 13.sp
+                compact -> 15.sp
+                longName -> 17.sp
+                else -> 20.sp
+            }
+            val priceFontSize = when {
+                compact && priceText.length >= 16 -> 19.sp
+                compact && priceText.length >= 13 -> 22.sp
+                compact && priceText.length >= 10 -> 25.sp
+                compact -> 29.sp
+                priceText.length >= 18 -> 29.sp
+                priceText.length >= 15 -> 33.sp
+                priceText.length >= 12 -> 36.sp
+                else -> 40.sp
+            }
+            val changeFontSize = when {
+                compact && changeText.length >= 9 -> 14.sp
+                compact -> 16.sp
+                changeText.length >= 11 -> 18.sp
+                else -> 21.sp
+            }
+
+            Column(
+                modifier = Modifier
+                    .fillMaxSize()
+                    .padding(if (compact) 13.dp else 17.dp),
+                verticalArrangement = Arrangement.SpaceBetween
+            ) {
+                Row(
+                    modifier = Modifier.fillMaxWidth(),
+                    verticalAlignment = Alignment.Top
+                ) {
+                    MarketBadge(item, Modifier.size(if (compact) 43.dp else 52.dp))
+                    Spacer(Modifier.width(if (compact) 9.dp else 12.dp))
+                    Column(
+                        modifier = Modifier.weight(1f),
+                        horizontalAlignment = Alignment.End
+                    ) {
+                        Text(
+                            text = item.name,
+                            color = Color.White,
+                            fontSize = nameFontSize,
+                            lineHeight = if (compact) 16.sp else 20.sp,
+                            fontWeight = FontWeight.Bold,
+                            textAlign = TextAlign.End,
+                            maxLines = if (gridMode) 2 else 3,
+                            overflow = TextOverflow.Ellipsis
+                        )
+                        Spacer(Modifier.height(3.dp))
+                        Text(
+                            text = item.code,
+                            color = ChandMuted,
+                            fontSize = if (compact) 11.sp else 13.sp,
+                            fontWeight = FontWeight.SemiBold,
+                            textAlign = TextAlign.End,
+                            maxLines = 1,
+                            overflow = TextOverflow.Ellipsis
+                        )
+                        Spacer(Modifier.height(4.dp))
+                        Row(
+                            verticalAlignment = Alignment.CenterVertically,
+                            horizontalArrangement = Arrangement.spacedBy(if (compact) 4.dp else 6.dp)
+                        ) {
+                            MarketStatusLabel(item, compact)
+                            Text(
+                                text = compactPercent(item),
+                                color = percentColor(item),
+                                fontSize = if (compact) 8.sp else 10.sp,
+                                lineHeight = if (compact) 9.sp else 11.sp,
+                                fontWeight = FontWeight.SemiBold,
+                                maxLines = 1
+                            )
+                        }
+                    }
+                }
+
+                Column(
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .padding(top = if (compact) 8.dp else 10.dp, bottom = 1.dp)
+                ) {
+                    Text(
+                        text = changeText,
+                        color = trendColor(item),
+                        fontSize = changeFontSize,
+                        lineHeight = if (compact) 17.sp else 22.sp,
+                        fontWeight = FontWeight.Medium,
+                        maxLines = 1,
+                        softWrap = false,
+                        overflow = TextOverflow.Clip
+                    )
+                    Spacer(Modifier.height(if (compact) 4.dp else 6.dp))
+                    Text(
+                        text = priceText,
+                        color = if (item.isAvailable) Color.White else ChandMuted,
+                        fontSize = priceFontSize,
+                        lineHeight = priceFontSize * 1.08f,
+                        fontWeight = FontWeight.Black,
+                        letterSpacing = (-0.55).sp,
+                        maxLines = 1,
+                        softWrap = false,
+                        overflow = TextOverflow.Clip
+                    )
+                }
+            }
+        }
+    }
+}
+
+"""
+u = u[:card_start] + final_card + u[trend_start:]
+ui.write_text(u)
+
+gradle = Path("source/app/build.gradle.kts")
+g = gradle.read_text()
+m = re.search(r"versionCode\s*=\s*(\d+)", g)
+if m:
+    next_code = max(int(m.group(1)), 19)
+    g = re.sub(r"versionCode\s*=\s*\d+", f"versionCode = {next_code}", g, count=1)
+g = re.sub(r'versionName\s*=\s*"[^"]+"', 'versionName = "4.6-layout-fix"', g, count=1)
+gradle.write_text(g)
