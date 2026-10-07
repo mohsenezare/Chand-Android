@@ -2956,3 +2956,931 @@ if "private fun CatalogUpdateCard(" in prefix:
     # The updater helper intentionally lives immediately before ManageItemsDialog.
     u = u[:manage_pos] + "}\n\n" + u[manage_pos:]
 ui_file.write_text(u)
+
+
+# --- LOCKED v4.8.4 WIDGETS ONLY: premium day/night widget pack ---
+# IMPORTANT: Everything above remains the verified app baseline.
+# This block modifies ONLY widget provider / widget resources / widget receivers.
+# Main app UI, pricing, live feeds, catalog updater, logos, ordering and settings stay untouched.
+
+res = Path("source/app/src/main/res")
+widget_file = root / "widget/ChandWidgetProvider.kt"
+
+widget_file.write_text(r'''package ir.personal.chand.widget
+
+import android.app.PendingIntent
+import android.appwidget.AppWidgetManager
+import android.appwidget.AppWidgetProvider
+import android.content.ComponentName
+import android.content.Context
+import android.content.Intent
+import android.widget.RemoteViews
+import androidx.work.CoroutineWorker
+import androidx.work.WorkManager
+import androidx.work.WorkerParameters
+import ir.personal.chand.MainActivity
+import ir.personal.chand.R
+import ir.personal.chand.data.DEFAULT_MARKET_DESCRIPTORS
+import ir.personal.chand.data.DEFAULT_VISIBLE_IDS
+import ir.personal.chand.data.DataOrigin
+import ir.personal.chand.data.MarketItem
+import ir.personal.chand.data.MarketSource
+import ir.personal.chand.ui.MarketFormatting
+import org.json.JSONArray
+import org.json.JSONObject
+
+class ChandWidgetProvider : AppWidgetProvider() {
+    override fun onEnabled(context: Context) {
+        WidgetUpdater.schedule(context)
+        WidgetUpdater.refreshNow(context)
+    }
+
+    override fun onUpdate(context: Context, manager: AppWidgetManager, ids: IntArray) {
+        WidgetUpdater.schedule(context)
+        val items = WidgetUpdater.readItems(context)
+        ids.forEach { id ->
+            WidgetUpdater.updateSingle(context, manager, id, items.first())
+        }
+        WidgetUpdater.refreshNow(context)
+    }
+}
+
+class ChandWideWidgetProvider : AppWidgetProvider() {
+    override fun onEnabled(context: Context) {
+        WidgetUpdater.schedule(context)
+        WidgetUpdater.refreshNow(context)
+    }
+
+    override fun onUpdate(context: Context, manager: AppWidgetManager, ids: IntArray) {
+        WidgetUpdater.schedule(context)
+        val items = WidgetUpdater.readItems(context)
+        ids.forEach { id ->
+            WidgetUpdater.updateWide(context, manager, id, items.first())
+        }
+        WidgetUpdater.refreshNow(context)
+    }
+}
+
+class ChandTripleWidgetProvider : AppWidgetProvider() {
+    override fun onEnabled(context: Context) {
+        WidgetUpdater.schedule(context)
+        WidgetUpdater.refreshNow(context)
+    }
+
+    override fun onUpdate(context: Context, manager: AppWidgetManager, ids: IntArray) {
+        WidgetUpdater.schedule(context)
+        val items = WidgetUpdater.readItems(context)
+        ids.forEach { id ->
+            WidgetUpdater.updateTriple(context, manager, id, items)
+        }
+        WidgetUpdater.refreshNow(context)
+    }
+}
+
+class ChandGridWidgetProvider : AppWidgetProvider() {
+    override fun onEnabled(context: Context) {
+        WidgetUpdater.schedule(context)
+        WidgetUpdater.refreshNow(context)
+    }
+
+    override fun onUpdate(context: Context, manager: AppWidgetManager, ids: IntArray) {
+        WidgetUpdater.schedule(context)
+        val items = WidgetUpdater.readItems(context)
+        ids.forEach { id ->
+            WidgetUpdater.updateGrid(context, manager, id, items)
+        }
+        WidgetUpdater.refreshNow(context)
+    }
+}
+
+class WidgetRefreshWorker(
+    appContext: Context,
+    params: WorkerParameters
+) : CoroutineWorker(appContext, params) {
+    override suspend fun doWork(): Result {
+        WidgetUpdater.updateAll(applicationContext, WidgetUpdater.readItems(applicationContext))
+        return Result.success()
+    }
+}
+
+object WidgetUpdater {
+    private const val ITEMS_KEY = "items_v3"
+    private const val PERIODIC_WORK = "chand-widget-periodic-v2"
+    private const val IMMEDIATE_WORK = "chand-widget-now-v2"
+    private var lastWidgetCacheWriteAt = 0L
+
+    fun schedule(context: Context) {
+        WorkManager.getInstance(context).cancelUniqueWork(PERIODIC_WORK)
+        WorkManager.getInstance(context).cancelUniqueWork(IMMEDIATE_WORK)
+    }
+
+    fun refreshNow(context: Context) {
+        updateAll(context, readItems(context))
+    }
+
+    fun updateAll(context: Context, incoming: List<MarketItem>, forceCacheWrite: Boolean = false) {
+        val validIncoming = incoming.filter {
+            it.isAvailable && it.price.isFinite() && it.price > 0.0
+        }
+        val cached = readItems(context)
+        val validById = validIncoming.associateBy(MarketItem::id)
+        val displayItems = buildList {
+            incoming.forEach { item ->
+                validById[item.id]?.let(::add)
+                    ?: cached.firstOrNull { it.id == item.id }?.let(::add)
+            }
+            cached.forEach { item ->
+                if (none { it.id == item.id }) add(item)
+            }
+        }.ifEmpty { cached }
+
+        if (validIncoming.isNotEmpty()) saveItems(context, displayItems, forceCacheWrite)
+
+        val manager = AppWidgetManager.getInstance(context)
+
+        manager.getAppWidgetIds(
+            ComponentName(context, ChandWidgetProvider::class.java)
+        ).forEach { id ->
+            updateSingle(context, manager, id, displayItems.first())
+        }
+
+        manager.getAppWidgetIds(
+            ComponentName(context, ChandWideWidgetProvider::class.java)
+        ).forEach { id ->
+            updateWide(context, manager, id, displayItems.first())
+        }
+
+        manager.getAppWidgetIds(
+            ComponentName(context, ChandTripleWidgetProvider::class.java)
+        ).forEach { id ->
+            updateTriple(context, manager, id, displayItems)
+        }
+
+        manager.getAppWidgetIds(
+            ComponentName(context, ChandGridWidgetProvider::class.java)
+        ).forEach { id ->
+            updateGrid(context, manager, id, displayItems)
+        }
+    }
+
+    fun updateSingle(
+        context: Context,
+        manager: AppWidgetManager,
+        id: Int,
+        item: MarketItem
+    ) {
+        val views = RemoteViews(context.packageName, R.layout.widget_single).apply {
+            setTextViewText(R.id.widget_symbol, widgetSymbol(item.id, item.symbol))
+            setTextViewText(R.id.widget_code, item.code)
+            setTextViewText(R.id.widget_price, MarketFormatting.price(item))
+            setTextViewText(R.id.widget_change, MarketFormatting.change(item))
+            setTextColor(R.id.widget_change, trendColor(context, item))
+            setOnClickPendingIntent(R.id.widget_root, launchIntent(context))
+        }
+        manager.updateAppWidget(id, views)
+    }
+
+    fun updateWide(
+        context: Context,
+        manager: AppWidgetManager,
+        id: Int,
+        item: MarketItem
+    ) {
+        val views = RemoteViews(context.packageName, R.layout.widget_wide).apply {
+            setTextViewText(R.id.wide_symbol, widgetSymbol(item.id, item.symbol))
+            setTextViewText(R.id.wide_name, item.name)
+            setTextViewText(R.id.wide_code, item.code)
+            setTextViewText(R.id.wide_price, MarketFormatting.price(item))
+            setTextViewText(R.id.wide_change, MarketFormatting.change(item))
+            setTextColor(R.id.wide_change, trendColor(context, item))
+            setOnClickPendingIntent(R.id.wide_root, launchIntent(context))
+        }
+        manager.updateAppWidget(id, views)
+    }
+
+    fun updateTriple(
+        context: Context,
+        manager: AppWidgetManager,
+        id: Int,
+        input: List<MarketItem>
+    ) {
+        val items = displaySet(input, 3)
+        val views = RemoteViews(context.packageName, R.layout.widget_triple).apply {
+            bindListRow(context, this, 1, items[0])
+            bindListRow(context, this, 2, items[1])
+            bindListRow(context, this, 3, items[2])
+            setOnClickPendingIntent(R.id.triple_root, launchIntent(context))
+        }
+        manager.updateAppWidget(id, views)
+    }
+
+    fun updateGrid(
+        context: Context,
+        manager: AppWidgetManager,
+        id: Int,
+        input: List<MarketItem>
+    ) {
+        val items = displaySet(input, 4)
+        val views = RemoteViews(context.packageName, R.layout.widget_grid).apply {
+            bindGridCell(context, this, 1, items[0])
+            bindGridCell(context, this, 2, items[1])
+            bindGridCell(context, this, 3, items[2])
+            bindGridCell(context, this, 4, items[3])
+            setOnClickPendingIntent(R.id.grid_root, launchIntent(context))
+        }
+        manager.updateAppWidget(id, views)
+    }
+
+    private fun bindListRow(
+        context: Context,
+        views: RemoteViews,
+        row: Int,
+        item: MarketItem
+    ) {
+        val symbolId = when (row) {
+            1 -> R.id.triple_symbol_1
+            2 -> R.id.triple_symbol_2
+            else -> R.id.triple_symbol_3
+        }
+        val codeId = when (row) {
+            1 -> R.id.triple_code_1
+            2 -> R.id.triple_code_2
+            else -> R.id.triple_code_3
+        }
+        val priceId = when (row) {
+            1 -> R.id.triple_price_1
+            2 -> R.id.triple_price_2
+            else -> R.id.triple_price_3
+        }
+        val changeId = when (row) {
+            1 -> R.id.triple_change_1
+            2 -> R.id.triple_change_2
+            else -> R.id.triple_change_3
+        }
+
+        views.setTextViewText(symbolId, widgetSymbol(item.id, item.symbol))
+        views.setTextViewText(codeId, item.code)
+        views.setTextViewText(priceId, MarketFormatting.price(item))
+        views.setTextViewText(changeId, MarketFormatting.change(item))
+        views.setTextColor(changeId, trendColor(context, item))
+    }
+
+    private fun bindGridCell(
+        context: Context,
+        views: RemoteViews,
+        cell: Int,
+        item: MarketItem
+    ) {
+        val symbolId = when (cell) {
+            1 -> R.id.grid_symbol_1
+            2 -> R.id.grid_symbol_2
+            3 -> R.id.grid_symbol_3
+            else -> R.id.grid_symbol_4
+        }
+        val codeId = when (cell) {
+            1 -> R.id.grid_code_1
+            2 -> R.id.grid_code_2
+            3 -> R.id.grid_code_3
+            else -> R.id.grid_code_4
+        }
+        val priceId = when (cell) {
+            1 -> R.id.grid_price_1
+            2 -> R.id.grid_price_2
+            3 -> R.id.grid_price_3
+            else -> R.id.grid_price_4
+        }
+        val changeId = when (cell) {
+            1 -> R.id.grid_change_1
+            2 -> R.id.grid_change_2
+            3 -> R.id.grid_change_3
+            else -> R.id.grid_change_4
+        }
+
+        views.setTextViewText(symbolId, widgetSymbol(item.id, item.symbol))
+        views.setTextViewText(codeId, item.code)
+        views.setTextViewText(priceId, MarketFormatting.price(item))
+        views.setTextViewText(changeId, MarketFormatting.change(item))
+        views.setTextColor(changeId, trendColor(context, item))
+    }
+
+    fun readItems(context: Context): List<MarketItem> {
+        val prefs = context.getSharedPreferences("chand_widget", Context.MODE_PRIVATE)
+        val raw = prefs.getString(ITEMS_KEY, null)
+            ?: prefs.getString("items_v2", null)
+            ?: return defaults()
+
+        return runCatching {
+            val array = JSONArray(raw)
+            buildList {
+                for (index in 0 until array.length()) {
+                    val value = array.optJSONObject(index) ?: continue
+                    val price = value.optDouble("price", Double.NaN)
+                    if (!price.isFinite() || price <= 0.0) continue
+
+                    add(
+                        MarketItem(
+                            id = value.optString("id"),
+                            name = value.optString("name"),
+                            code = value.optString("code"),
+                            symbol = value.optString("symbol", "•"),
+                            price = price,
+                            change = value.optDouble("change", 0.0),
+                            changePercent = value.optDouble("changePercent", 0.0),
+                            high = value.optDouble("high", price),
+                            low = value.optDouble("low", price),
+                            buy = price,
+                            sell = price,
+                            history = emptyList(),
+                            sourceUpdatedAtMillis = value.optLong("sourceUpdatedAt", 0L),
+                            receivedAtMillis = value.optLong("receivedAt", 0L),
+                            origin = DataOrigin.CACHE,
+                            isAvailable = true,
+                            source = MarketSource.TGJU,
+                            unit = value.optString("unit", "تومان")
+                        )
+                    )
+                }
+            }
+        }.getOrDefault(emptyList()).ifEmpty { defaults() }
+    }
+
+    private fun saveItems(context: Context, items: List<MarketItem>, force: Boolean) {
+        val now = System.currentTimeMillis()
+        if (!force && now - lastWidgetCacheWriteAt < 10_000L) return
+        lastWidgetCacheWriteAt = now
+
+        val array = JSONArray().apply {
+            items.take(8).forEach { item ->
+                if (!item.isAvailable || item.price <= 0.0) return@forEach
+                put(JSONObject().apply {
+                    put("id", item.id)
+                    put("name", item.name)
+                    put("code", item.code)
+                    put("symbol", item.symbol)
+                    put("price", item.price)
+                    put("change", item.change)
+                    put("changePercent", item.changePercent)
+                    put("high", item.high)
+                    put("low", item.low)
+                    put("unit", item.unit)
+                    put("sourceUpdatedAt", item.sourceUpdatedAtMillis)
+                    put("receivedAt", item.receivedAtMillis)
+                })
+            }
+        }
+
+        context.getSharedPreferences("chand_widget", Context.MODE_PRIVATE)
+            .edit()
+            .putString(ITEMS_KEY, array.toString())
+            .apply()
+    }
+
+    private fun displaySet(input: List<MarketItem>, count: Int): List<MarketItem> {
+        val merged = (input + defaults()).distinctBy(MarketItem::id).toMutableList()
+        val fallback = defaults()
+        while (merged.size < count && fallback.isNotEmpty()) {
+            merged.add(fallback[merged.size % fallback.size])
+        }
+        return merged.take(count)
+    }
+
+    private fun widgetSymbol(id: String, fallback: String): String = when (id) {
+        "usd" -> "🇺🇸"
+        "euro" -> "🇪🇺"
+        "gold18", "emami" -> "🟡"
+        else -> fallback.ifBlank { "•" }
+    }
+
+    private fun trendColor(context: Context, item: MarketItem): Int = context.getColor(
+        when {
+            !item.isAvailable || item.change == 0.0 -> R.color.widget_neutral
+            item.change > 0.0 -> R.color.widget_up
+            else -> R.color.widget_down
+        }
+    )
+
+    private fun launchIntent(context: Context): PendingIntent = PendingIntent.getActivity(
+        context,
+        0,
+        Intent(context, MainActivity::class.java),
+        PendingIntent.FLAG_IMMUTABLE or PendingIntent.FLAG_UPDATE_CURRENT
+    )
+
+    private fun defaults(): List<MarketItem> = DEFAULT_MARKET_DESCRIPTORS
+        .filter { it.id in DEFAULT_VISIBLE_IDS }
+        .map { descriptor ->
+            MarketItem(
+                id = descriptor.id,
+                name = descriptor.name,
+                code = descriptor.code,
+                symbol = descriptor.symbol,
+                price = 0.0,
+                change = 0.0,
+                changePercent = 0.0,
+                high = 0.0,
+                low = 0.0,
+                buy = 0.0,
+                sell = 0.0,
+                history = emptyList(),
+                sourceUpdatedAtMillis = 0L,
+                receivedAtMillis = 0L,
+                origin = DataOrigin.UNAVAILABLE,
+                isAvailable = false,
+                source = descriptor.source,
+                category = descriptor.category,
+                unit = descriptor.unit
+            )
+        }
+}
+''')
+
+# Widget-only day colors.
+(res / "values/colors.xml").write_text(r'''<resources>
+    <color name="chand_icon_background">#FAF7F6</color>
+    <color name="widget_background">#F2F1EE</color>
+    <color name="widget_surface">#FEFEFD</color>
+    <color name="widget_surface_alt">#F2F2F4</color>
+    <color name="widget_text">#111113</color>
+    <color name="widget_muted">#7D7D83</color>
+    <color name="widget_up">#21A468</color>
+    <color name="widget_down">#D94B55</color>
+    <color name="widget_neutral">#8E8E93</color>
+    <color name="widget_border">#D9D9DE</color>
+    <color name="widget_divider">#E5E5E8</color>
+    <color name="widget_chip">#ECECEF</color>
+</resources>
+''')
+
+# Automatic night colors; no app-theme behavior is changed.
+values_night = res / "values-night"
+values_night.mkdir(parents=True, exist_ok=True)
+(values_night / "colors.xml").write_text(r'''<resources>
+    <color name="chand_icon_background">#FAF7F6</color>
+    <color name="widget_background">#111113</color>
+    <color name="widget_surface">#1C1C1E</color>
+    <color name="widget_surface_alt">#28282C</color>
+    <color name="widget_text">#FFFFFF</color>
+    <color name="widget_muted">#A8A8AD</color>
+    <color name="widget_up">#57B97D</color>
+    <color name="widget_down">#E45C61</color>
+    <color name="widget_neutral">#A8A8AD</color>
+    <color name="widget_border">#35FFFFFF</color>
+    <color name="widget_divider">#22FFFFFF</color>
+    <color name="widget_chip">#2B2B2F</color>
+</resources>
+''')
+
+drawable = res / "drawable"
+drawable_night = res / "drawable-night"
+drawable_night.mkdir(parents=True, exist_ok=True)
+
+(drawable / "widget_background.xml").write_text(r'''<?xml version="1.0" encoding="utf-8"?>
+<shape xmlns:android="http://schemas.android.com/apk/res/android" android:shape="rectangle">
+    <gradient android:angle="270" android:startColor="#FFFFFF" android:endColor="#F7F7F5" />
+    <corners android:radius="28dp" />
+    <stroke android:width="1dp" android:color="@color/widget_border" />
+</shape>
+''')
+(drawable_night / "widget_background.xml").write_text(r'''<?xml version="1.0" encoding="utf-8"?>
+<shape xmlns:android="http://schemas.android.com/apk/res/android" android:shape="rectangle">
+    <gradient android:angle="270" android:startColor="#222225" android:endColor="#171719" />
+    <corners android:radius="28dp" />
+    <stroke android:width="1dp" android:color="@color/widget_border" />
+</shape>
+''')
+
+(drawable / "widget_cell_background.xml").write_text(r'''<?xml version="1.0" encoding="utf-8"?>
+<shape xmlns:android="http://schemas.android.com/apk/res/android" android:shape="rectangle">
+    <solid android:color="@color/widget_surface_alt" />
+    <corners android:radius="20dp" />
+    <stroke android:width="1dp" android:color="@color/widget_border" />
+</shape>
+''')
+(drawable_night / "widget_cell_background.xml").write_text(r'''<?xml version="1.0" encoding="utf-8"?>
+<shape xmlns:android="http://schemas.android.com/apk/res/android" android:shape="rectangle">
+    <solid android:color="@color/widget_surface_alt" />
+    <corners android:radius="20dp" />
+    <stroke android:width="1dp" android:color="@color/widget_border" />
+</shape>
+''')
+
+(drawable / "widget_chip_background.xml").write_text(r'''<?xml version="1.0" encoding="utf-8"?>
+<shape xmlns:android="http://schemas.android.com/apk/res/android" android:shape="rectangle">
+    <solid android:color="@color/widget_chip" />
+    <corners android:radius="999dp" />
+</shape>
+''')
+(drawable_night / "widget_chip_background.xml").write_text(r'''<?xml version="1.0" encoding="utf-8"?>
+<shape xmlns:android="http://schemas.android.com/apk/res/android" android:shape="rectangle">
+    <solid android:color="@color/widget_chip" />
+    <corners android:radius="999dp" />
+</shape>
+''')
+
+# Compact single-price widget.
+(res / "layout/widget_single.xml").write_text(r'''<?xml version="1.0" encoding="utf-8"?>
+<LinearLayout xmlns:android="http://schemas.android.com/apk/res/android"
+    android:id="@+id/widget_root"
+    android:layout_width="match_parent"
+    android:layout_height="match_parent"
+    android:background="@drawable/widget_background"
+    android:gravity="center_vertical"
+    android:orientation="vertical"
+    android:padding="14dp">
+
+    <LinearLayout
+        android:layout_width="match_parent"
+        android:layout_height="wrap_content"
+        android:gravity="center_vertical"
+        android:orientation="horizontal">
+
+        <TextView
+            android:id="@+id/widget_symbol"
+            android:layout_width="42dp"
+            android:layout_height="42dp"
+            android:background="@drawable/widget_chip_background"
+            android:gravity="center"
+            android:text="@string/widget_preview_symbol"
+            android:textSize="21sp" />
+
+        <TextView
+            android:id="@+id/widget_code"
+            android:layout_width="0dp"
+            android:layout_height="wrap_content"
+            android:layout_marginStart="10dp"
+            android:layout_weight="1"
+            android:gravity="end"
+            android:fontFamily="sans-serif-medium"
+            android:maxLines="1"
+            android:text="@string/widget_preview_code"
+            android:textColor="@color/widget_text"
+            android:textSize="15sp" />
+    </LinearLayout>
+
+    <TextView
+        android:id="@+id/widget_change"
+        android:layout_width="wrap_content"
+        android:layout_height="wrap_content"
+        android:layout_marginTop="12dp"
+        android:fontFamily="sans-serif-medium"
+        android:text="@string/widget_preview_change"
+        android:textColor="@color/widget_up"
+        android:textSize="13sp" />
+
+    <TextView
+        android:id="@+id/widget_price"
+        android:layout_width="match_parent"
+        android:layout_height="wrap_content"
+        android:fontFamily="sans-serif-black"
+        android:gravity="start"
+        android:maxLines="1"
+        android:text="@string/widget_preview_price"
+        android:textColor="@color/widget_text"
+        android:textSize="27sp" />
+</LinearLayout>
+''')
+
+# Premium wide focus widget.
+(res / "layout/widget_wide.xml").write_text(r'''<?xml version="1.0" encoding="utf-8"?>
+<LinearLayout xmlns:android="http://schemas.android.com/apk/res/android"
+    android:id="@+id/wide_root"
+    android:layout_width="match_parent"
+    android:layout_height="match_parent"
+    android:background="@drawable/widget_background"
+    android:gravity="center_vertical"
+    android:orientation="horizontal"
+    android:padding="16dp">
+
+    <TextView
+        android:id="@+id/wide_symbol"
+        android:layout_width="56dp"
+        android:layout_height="56dp"
+        android:background="@drawable/widget_chip_background"
+        android:gravity="center"
+        android:text="@string/widget_preview_symbol"
+        android:textSize="28sp" />
+
+    <LinearLayout
+        android:layout_width="0dp"
+        android:layout_height="wrap_content"
+        android:layout_marginStart="13dp"
+        android:layout_weight="1"
+        android:orientation="vertical">
+
+        <TextView
+            android:id="@+id/wide_name"
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:ellipsize="end"
+            android:fontFamily="sans-serif-medium"
+            android:maxLines="1"
+            android:text="@string/widget_preview_name"
+            android:textColor="@color/widget_text"
+            android:textSize="16sp" />
+
+        <TextView
+            android:id="@+id/wide_code"
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:layout_marginTop="2dp"
+            android:fontFamily="sans-serif"
+            android:maxLines="1"
+            android:text="@string/widget_preview_code"
+            android:textColor="@color/widget_muted"
+            android:textSize="11sp" />
+    </LinearLayout>
+
+    <LinearLayout
+        android:layout_width="wrap_content"
+        android:layout_height="wrap_content"
+        android:gravity="end"
+        android:orientation="vertical">
+
+        <TextView
+            android:id="@+id/wide_price"
+            android:layout_width="wrap_content"
+            android:layout_height="wrap_content"
+            android:fontFamily="sans-serif-black"
+            android:gravity="end"
+            android:maxLines="1"
+            android:text="@string/widget_preview_price"
+            android:textColor="@color/widget_text"
+            android:textSize="27sp" />
+
+        <TextView
+            android:id="@+id/wide_change"
+            android:layout_width="wrap_content"
+            android:layout_height="wrap_content"
+            android:layout_marginTop="1dp"
+            android:fontFamily="sans-serif-medium"
+            android:gravity="end"
+            android:text="@string/widget_preview_change"
+            android:textColor="@color/widget_up"
+            android:textSize="12sp" />
+    </LinearLayout>
+</LinearLayout>
+''')
+
+# Three-price modern list.
+(res / "layout/widget_triple.xml").write_text(r'''<?xml version="1.0" encoding="utf-8"?>
+<LinearLayout xmlns:android="http://schemas.android.com/apk/res/android"
+    android:id="@+id/triple_root"
+    android:layout_width="match_parent"
+    android:layout_height="match_parent"
+    android:background="@drawable/widget_background"
+    android:orientation="vertical"
+    android:padding="12dp">
+
+    <TextView
+        android:layout_width="match_parent"
+        android:layout_height="wrap_content"
+        android:fontFamily="sans-serif-medium"
+        android:text="@string/widget_market_title"
+        android:textColor="@color/widget_muted"
+        android:textSize="10sp" />
+
+    <LinearLayout
+        android:layout_width="match_parent"
+        android:layout_height="0dp"
+        android:layout_marginTop="5dp"
+        android:layout_weight="1"
+        android:gravity="center_vertical"
+        android:orientation="horizontal">
+        <TextView android:id="@+id/triple_symbol_1" android:layout_width="34dp" android:layout_height="34dp" android:background="@drawable/widget_chip_background" android:gravity="center" android:text="@string/widget_preview_symbol" android:textSize="17sp" />
+        <TextView android:id="@+id/triple_code_1" android:layout_width="0dp" android:layout_height="wrap_content" android:layout_marginStart="9dp" android:layout_weight="1" android:fontFamily="sans-serif-medium" android:text="@string/widget_preview_code" android:textColor="@color/widget_text" android:textSize="13sp" />
+        <LinearLayout android:layout_width="wrap_content" android:layout_height="wrap_content" android:gravity="end" android:orientation="vertical">
+            <TextView android:id="@+id/triple_price_1" android:layout_width="wrap_content" android:layout_height="wrap_content" android:fontFamily="sans-serif-bold" android:gravity="end" android:maxLines="1" android:text="@string/widget_preview_price" android:textColor="@color/widget_text" android:textSize="16sp" />
+            <TextView android:id="@+id/triple_change_1" android:layout_width="wrap_content" android:layout_height="wrap_content" android:fontFamily="sans-serif-medium" android:gravity="end" android:text="@string/widget_preview_change" android:textColor="@color/widget_up" android:textSize="10sp" />
+        </LinearLayout>
+    </LinearLayout>
+
+    <View android:layout_width="match_parent" android:layout_height="1dp" android:background="@color/widget_divider" />
+
+    <LinearLayout
+        android:layout_width="match_parent"
+        android:layout_height="0dp"
+        android:layout_weight="1"
+        android:gravity="center_vertical"
+        android:orientation="horizontal">
+        <TextView android:id="@+id/triple_symbol_2" android:layout_width="34dp" android:layout_height="34dp" android:background="@drawable/widget_chip_background" android:gravity="center" android:text="🇪🇺" android:textSize="17sp" />
+        <TextView android:id="@+id/triple_code_2" android:layout_width="0dp" android:layout_height="wrap_content" android:layout_marginStart="9dp" android:layout_weight="1" android:fontFamily="sans-serif-medium" android:text="EUR" android:textColor="@color/widget_text" android:textSize="13sp" />
+        <LinearLayout android:layout_width="wrap_content" android:layout_height="wrap_content" android:gravity="end" android:orientation="vertical">
+            <TextView android:id="@+id/triple_price_2" android:layout_width="wrap_content" android:layout_height="wrap_content" android:fontFamily="sans-serif-bold" android:gravity="end" android:maxLines="1" android:text="246,400" android:textColor="@color/widget_text" android:textSize="16sp" />
+            <TextView android:id="@+id/triple_change_2" android:layout_width="wrap_content" android:layout_height="wrap_content" android:fontFamily="sans-serif-medium" android:gravity="end" android:text="↑7.4K" android:textColor="@color/widget_up" android:textSize="10sp" />
+        </LinearLayout>
+    </LinearLayout>
+
+    <View android:layout_width="match_parent" android:layout_height="1dp" android:background="@color/widget_divider" />
+
+    <LinearLayout
+        android:layout_width="match_parent"
+        android:layout_height="0dp"
+        android:layout_weight="1"
+        android:gravity="center_vertical"
+        android:orientation="horizontal">
+        <TextView android:id="@+id/triple_symbol_3" android:layout_width="34dp" android:layout_height="34dp" android:background="@drawable/widget_chip_background" android:gravity="center" android:text="🟡" android:textSize="17sp" />
+        <TextView android:id="@+id/triple_code_3" android:layout_width="0dp" android:layout_height="wrap_content" android:layout_marginStart="9dp" android:layout_weight="1" android:fontFamily="sans-serif-medium" android:text="GRAM" android:textColor="@color/widget_text" android:textSize="13sp" />
+        <LinearLayout android:layout_width="wrap_content" android:layout_height="wrap_content" android:gravity="end" android:orientation="vertical">
+            <TextView android:id="@+id/triple_price_3" android:layout_width="wrap_content" android:layout_height="wrap_content" android:fontFamily="sans-serif-bold" android:gravity="end" android:maxLines="1" android:text="22.323M" android:textColor="@color/widget_text" android:textSize="16sp" />
+            <TextView android:id="@+id/triple_change_3" android:layout_width="wrap_content" android:layout_height="wrap_content" android:fontFamily="sans-serif-medium" android:gravity="end" android:text="↑558K" android:textColor="@color/widget_up" android:textSize="10sp" />
+        </LinearLayout>
+    </LinearLayout>
+</LinearLayout>
+''')
+
+# Four-price 2x2 market board.
+(res / "layout/widget_grid.xml").write_text(r'''<?xml version="1.0" encoding="utf-8"?>
+<LinearLayout xmlns:android="http://schemas.android.com/apk/res/android"
+    android:id="@+id/grid_root"
+    android:layout_width="match_parent"
+    android:layout_height="match_parent"
+    android:background="@drawable/widget_background"
+    android:orientation="vertical"
+    android:padding="9dp">
+
+    <LinearLayout
+        android:layout_width="match_parent"
+        android:layout_height="0dp"
+        android:layout_weight="1"
+        android:orientation="horizontal">
+
+        <LinearLayout
+            android:layout_width="0dp"
+            android:layout_height="match_parent"
+            android:layout_margin="3dp"
+            android:layout_weight="1"
+            android:background="@drawable/widget_cell_background"
+            android:orientation="vertical"
+            android:padding="10dp">
+            <LinearLayout android:layout_width="match_parent" android:layout_height="wrap_content" android:gravity="center_vertical" android:orientation="horizontal">
+                <TextView android:id="@+id/grid_symbol_1" android:layout_width="30dp" android:layout_height="30dp" android:background="@drawable/widget_chip_background" android:gravity="center" android:text="@string/widget_preview_symbol" android:textSize="15sp" />
+                <TextView android:id="@+id/grid_code_1" android:layout_width="0dp" android:layout_height="wrap_content" android:layout_marginStart="7dp" android:layout_weight="1" android:fontFamily="sans-serif-medium" android:gravity="end" android:text="@string/widget_preview_code" android:textColor="@color/widget_muted" android:textSize="10sp" />
+            </LinearLayout>
+            <TextView android:id="@+id/grid_price_1" android:layout_width="match_parent" android:layout_height="0dp" android:layout_weight="1" android:fontFamily="sans-serif-black" android:gravity="bottom|start" android:maxLines="1" android:text="@string/widget_preview_price" android:textColor="@color/widget_text" android:textSize="18sp" />
+            <TextView android:id="@+id/grid_change_1" android:layout_width="wrap_content" android:layout_height="wrap_content" android:fontFamily="sans-serif-medium" android:text="@string/widget_preview_change" android:textColor="@color/widget_up" android:textSize="10sp" />
+        </LinearLayout>
+
+        <LinearLayout
+            android:layout_width="0dp"
+            android:layout_height="match_parent"
+            android:layout_margin="3dp"
+            android:layout_weight="1"
+            android:background="@drawable/widget_cell_background"
+            android:orientation="vertical"
+            android:padding="10dp">
+            <LinearLayout android:layout_width="match_parent" android:layout_height="wrap_content" android:gravity="center_vertical" android:orientation="horizontal">
+                <TextView android:id="@+id/grid_symbol_2" android:layout_width="30dp" android:layout_height="30dp" android:background="@drawable/widget_chip_background" android:gravity="center" android:text="🇪🇺" android:textSize="15sp" />
+                <TextView android:id="@+id/grid_code_2" android:layout_width="0dp" android:layout_height="wrap_content" android:layout_marginStart="7dp" android:layout_weight="1" android:fontFamily="sans-serif-medium" android:gravity="end" android:text="EUR" android:textColor="@color/widget_muted" android:textSize="10sp" />
+            </LinearLayout>
+            <TextView android:id="@+id/grid_price_2" android:layout_width="match_parent" android:layout_height="0dp" android:layout_weight="1" android:fontFamily="sans-serif-black" android:gravity="bottom|start" android:maxLines="1" android:text="246,400" android:textColor="@color/widget_text" android:textSize="18sp" />
+            <TextView android:id="@+id/grid_change_2" android:layout_width="wrap_content" android:layout_height="wrap_content" android:fontFamily="sans-serif-medium" android:text="↑7.4K" android:textColor="@color/widget_up" android:textSize="10sp" />
+        </LinearLayout>
+    </LinearLayout>
+
+    <LinearLayout
+        android:layout_width="match_parent"
+        android:layout_height="0dp"
+        android:layout_weight="1"
+        android:orientation="horizontal">
+
+        <LinearLayout
+            android:layout_width="0dp"
+            android:layout_height="match_parent"
+            android:layout_margin="3dp"
+            android:layout_weight="1"
+            android:background="@drawable/widget_cell_background"
+            android:orientation="vertical"
+            android:padding="10dp">
+            <LinearLayout android:layout_width="match_parent" android:layout_height="wrap_content" android:gravity="center_vertical" android:orientation="horizontal">
+                <TextView android:id="@+id/grid_symbol_3" android:layout_width="30dp" android:layout_height="30dp" android:background="@drawable/widget_chip_background" android:gravity="center" android:text="🟡" android:textSize="15sp" />
+                <TextView android:id="@+id/grid_code_3" android:layout_width="0dp" android:layout_height="wrap_content" android:layout_marginStart="7dp" android:layout_weight="1" android:fontFamily="sans-serif-medium" android:gravity="end" android:text="GRAM" android:textColor="@color/widget_muted" android:textSize="10sp" />
+            </LinearLayout>
+            <TextView android:id="@+id/grid_price_3" android:layout_width="match_parent" android:layout_height="0dp" android:layout_weight="1" android:fontFamily="sans-serif-black" android:gravity="bottom|start" android:maxLines="1" android:text="22.323M" android:textColor="@color/widget_text" android:textSize="18sp" />
+            <TextView android:id="@+id/grid_change_3" android:layout_width="wrap_content" android:layout_height="wrap_content" android:fontFamily="sans-serif-medium" android:text="↑558K" android:textColor="@color/widget_up" android:textSize="10sp" />
+        </LinearLayout>
+
+        <LinearLayout
+            android:layout_width="0dp"
+            android:layout_height="match_parent"
+            android:layout_margin="3dp"
+            android:layout_weight="1"
+            android:background="@drawable/widget_cell_background"
+            android:orientation="vertical"
+            android:padding="10dp">
+            <LinearLayout android:layout_width="match_parent" android:layout_height="wrap_content" android:gravity="center_vertical" android:orientation="horizontal">
+                <TextView android:id="@+id/grid_symbol_4" android:layout_width="30dp" android:layout_height="30dp" android:background="@drawable/widget_chip_background" android:gravity="center" android:text="🟡" android:textSize="15sp" />
+                <TextView android:id="@+id/grid_code_4" android:layout_width="0dp" android:layout_height="wrap_content" android:layout_marginStart="7dp" android:layout_weight="1" android:fontFamily="sans-serif-medium" android:gravity="end" android:text="EMAMI" android:textColor="@color/widget_muted" android:textSize="10sp" />
+            </LinearLayout>
+            <TextView android:id="@+id/grid_price_4" android:layout_width="match_parent" android:layout_height="0dp" android:layout_weight="1" android:fontFamily="sans-serif-black" android:gravity="bottom|start" android:maxLines="1" android:text="—" android:textColor="@color/widget_text" android:textSize="18sp" />
+            <TextView android:id="@+id/grid_change_4" android:layout_width="wrap_content" android:layout_height="wrap_content" android:fontFamily="sans-serif-medium" android:text="—" android:textColor="@color/widget_neutral" android:textSize="10sp" />
+        </LinearLayout>
+    </LinearLayout>
+</LinearLayout>
+''')
+
+# Widget descriptions / previews.
+strings = res / "values/strings.xml"
+x = strings.read_text()
+if 'name="wide_widget_name"' not in x:
+    x = x.replace(
+        "</resources>",
+        """    <string name="wide_widget_name">Chand — کارت عریض</string>
+    <string name="grid_widget_name">Chand — پنل چهارتایی</string>
+    <string name="widget_preview_name" translatable="false">US Dollar</string>
+    <string name="widget_market_title">Chand?! • Market</string>
+</resources>"""
+    )
+strings.write_text(x)
+
+(res / "xml/chand_wide_widget_info.xml").write_text(r'''<?xml version="1.0" encoding="utf-8"?>
+<appwidget-provider xmlns:android="http://schemas.android.com/apk/res/android"
+    xmlns:tools="http://schemas.android.com/tools"
+    tools:targetApi="s"
+    android:description="@string/wide_widget_name"
+    android:initialLayout="@layout/widget_wide"
+    android:minWidth="250dp"
+    android:minHeight="82dp"
+    android:previewLayout="@layout/widget_wide"
+    android:resizeMode="horizontal|vertical"
+    android:updatePeriodMillis="1800000"
+    android:widgetCategory="home_screen" />
+''')
+
+(res / "xml/chand_grid_widget_info.xml").write_text(r'''<?xml version="1.0" encoding="utf-8"?>
+<appwidget-provider xmlns:android="http://schemas.android.com/apk/res/android"
+    xmlns:tools="http://schemas.android.com/tools"
+    tools:targetApi="s"
+    android:description="@string/grid_widget_name"
+    android:initialLayout="@layout/widget_grid"
+    android:minWidth="250dp"
+    android:minHeight="220dp"
+    android:previewLayout="@layout/widget_grid"
+    android:resizeMode="horizontal|vertical"
+    android:updatePeriodMillis="1800000"
+    android:widgetCategory="home_screen" />
+''')
+
+# Refine existing widget size declarations only (widget-only metadata).
+(res / "xml/chand_widget_info.xml").write_text(r'''<?xml version="1.0" encoding="utf-8"?>
+<appwidget-provider xmlns:android="http://schemas.android.com/apk/res/android"
+    xmlns:tools="http://schemas.android.com/tools"
+    tools:targetApi="s"
+    android:description="@string/widget_name"
+    android:initialLayout="@layout/widget_single"
+    android:minWidth="145dp"
+    android:minHeight="120dp"
+    android:previewLayout="@layout/widget_single"
+    android:resizeMode="horizontal|vertical"
+    android:updatePeriodMillis="1800000"
+    android:widgetCategory="home_screen" />
+''')
+
+(res / "xml/chand_triple_widget_info.xml").write_text(r'''<?xml version="1.0" encoding="utf-8"?>
+<appwidget-provider xmlns:android="http://schemas.android.com/apk/res/android"
+    xmlns:tools="http://schemas.android.com/tools"
+    tools:targetApi="s"
+    android:description="@string/triple_widget_name"
+    android:initialLayout="@layout/widget_triple"
+    android:minWidth="250dp"
+    android:minHeight="185dp"
+    android:previewLayout="@layout/widget_triple"
+    android:resizeMode="horizontal|vertical"
+    android:updatePeriodMillis="1800000"
+    android:widgetCategory="home_screen" />
+''')
+
+# Add ONLY the two new widget receivers to the manifest.
+manifest = Path("source/app/src/main/AndroidManifest.xml")
+m = manifest.read_text()
+if ".widget.ChandWideWidgetProvider" not in m:
+    receiver = r'''
+        <receiver
+            android:name=".widget.ChandWideWidgetProvider"
+            android:exported="true">
+            <intent-filter>
+                <action android:name="android.appwidget.action.APPWIDGET_UPDATE" />
+            </intent-filter>
+            <meta-data
+                android:name="android.appwidget.provider"
+                android:resource="@xml/chand_wide_widget_info" />
+        </receiver>
+
+        <receiver
+            android:name=".widget.ChandGridWidgetProvider"
+            android:exported="true">
+            <intent-filter>
+                <action android:name="android.appwidget.action.APPWIDGET_UPDATE" />
+            </intent-filter>
+            <meta-data
+                android:name="android.appwidget.provider"
+                android:resource="@xml/chand_grid_widget_info" />
+        </receiver>
+'''
+    m = m.replace("    </application>", receiver + "    </application>", 1)
+manifest.write_text(m)
+
+# Installation-only bump so this widget pack can install over the prior build.
+gradle = Path("source/app/build.gradle.kts")
+g = gradle.read_text()
+g = re.sub(r"versionCode\s*=\s*\d+", "versionCode = 41", g, count=1)
+gradle.write_text(g)
