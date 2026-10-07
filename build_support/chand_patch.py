@@ -2581,12 +2581,17 @@ onManage: () -> Unit
 ) {"""
     uu = uu[:match.start()] + signature_new + uu[match.end():]
 
-manage_button = """TextButton(onClick = onManage, modifier = Modifier.fillMaxWidth()) {
-Text("مدیریت قیمت‌ها")
-}"""
 if "بررسی و به‌روزرسانی نمادها" not in uu:
-    if manage_button not in uu:
-        raise SystemExit("symbol updater: settings manage button anchor not found")
+    import re as _re
+    manage_pattern = _re.compile(
+        r'''TextButton\s*\(\s*onClick\s*=\s*onManage\s*,\s*modifier\s*=\s*Modifier\.fillMaxWidth\(\)\s*\)\s*\{\s*
+        Text\s*\(\s*"مدیریت قیمت‌ها"\s*\)\s*
+        \}''',
+        _re.VERBOSE
+    )
+    manage_match = manage_pattern.search(uu)
+    if not manage_match:
+        raise SystemExit("symbol updater: flexible settings manage button anchor not found")
     update_ui = r'''Spacer(Modifier.height(12.dp))
 HorizontalDivider(color = Color(0xFF343438))
 Text(
@@ -2685,7 +2690,7 @@ Spacer(Modifier.height(6.dp))
 TextButton(onClick = onManage, modifier = Modifier.fillMaxWidth()) {
 Text("مدیریت قیمت‌ها")
 }'''
-    uu = uu.replace(manage_button, update_ui, 1)
+    uu = uu[:manage_match.start()] + update_ui + uu[manage_match.end():]
 
 ui_file.write_text(uu)
 
