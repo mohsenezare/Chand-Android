@@ -1456,3 +1456,110 @@ g = re.sub(
     count=1
 )
 gradle.write_text(g)
+
+
+# ---------------- v4.11 restore symbol + TSETMC last-valid price ----------------
+# Restore the secondary market/ticker code size to the pre-v4.10 values.
+ui = root / "MainActivity.kt"
+u = ui.read_text()
+
+small_code_logic = """            val codeLength = item.code.trim().length
+            val codeFontSize = when {
+                compact && codeLength <= 5 -> 11.sp
+                compact && codeLength <= 8 -> 10.sp
+                compact -> 9.sp
+                codeLength <= 5 -> 13.sp
+                codeLength <= 8 -> 12.sp
+                else -> 11.sp
+            }
+"""
+restored_code_logic = """            val codeLength = item.code.trim().length
+            val codeFontSize = when {
+                compact && codeLength <= 5 -> 13.sp
+                compact && codeLength <= 8 -> 12.sp
+                compact -> 11.sp
+                codeLength <= 5 -> 15.sp
+                codeLength <= 8 -> 14.sp
+                else -> 13.sp
+            }
+"""
+if small_code_logic not in u:
+    raise SystemExit("v4.11 codeFontSize anchor not found")
+u = u.replace(small_code_logic, restored_code_logic, 1)
+u = u.replace(
+    "fontSize = codeFontSize,\n                            lineHeight = codeFontSize * 1.05f,\n                            fontWeight = FontWeight.SemiBold,",
+    "fontSize = codeFontSize,\n                            fontWeight = FontWeight.SemiBold,",
+    1
+)
+ui.write_text(u)
+
+# Strengthen TSETMC last-valid-price behavior for symbols that have no trade today.
+repo = root / "data/MarketRepository.kt"
+r = repo.read_text()
+
+old_daily_fallback = """                        else -> requestResult {
+                            TsetmcProtocol.parseDailyList(
+                                httpGet("$TSETMC_API/api/ClosingPrice/GetClosingPriceDailyList/$insCode/15", 10_000)
+                            ).firstOrNull { it.hasRealTrade }
+                        }.getOrNull()
+"""
+new_daily_fallback = """                        else -> requestResult {
+                            TsetmcProtocol.parseDailyList(
+                                httpGet("$TSETMC_API/api/ClosingPrice/GetClosingPriceDailyList/$insCode/365", 12_000)
+                            )
+                                .filter { it.hasRealTrade }
+                                .maxByOrNull { q ->
+                                    TsetmcProtocol.toSourceTimestamp(q.dEven, q.hEven, fallbackToToday = false)
+                                }
+                        }.getOrNull()
+"""
+if old_daily_fallback not in r:
+    raise SystemExit("v4.11 TSETMC daily fallback anchor not found")
+r = r.replace(old_daily_fallback, new_daily_fallback, 1)
+
+old_q_price = """                    val q = quote ?: error("No real TSETMC last trade")
+                    val price = q.last.takeIf { it > 0.0 } ?: error("Invalid TSETMC last trade")
+                    val timestamp = TsetmcProtocol.toSourceTimestamp(q.dEven, q.hEven, fallbackToToday = current?.hasRealTrade == true)
+                        .takeIf { it > 0L }
+                        ?: previous?.sourceUpdatedAtMillis?.takeIf { it > 0L }
+                        ?: receivedAtMillis
+"""
+new_q_price = """                    val q = quote
+                        ?: current?.takeIf { it.last > 0.0 || it.closing > 0.0 || it.yesterday > 0.0 }
+                        ?: error("No valid TSETMC last price")
+                    val price = when {
+                        q.last > 0.0 -> q.last
+                        q.closing > 0.0 -> q.closing
+                        q.yesterday > 0.0 -> q.yesterday
+                        else -> previous?.price?.takeIf { it > 0.0 } ?: error("Invalid TSETMC last price")
+                    }
+                    val timestamp = if (q.hasRealTrade) {
+                        TsetmcProtocol.toSourceTimestamp(q.dEven, q.hEven, fallbackToToday = current?.hasRealTrade == true)
+                            .takeIf { it > 0L }
+                            ?: previous?.sourceUpdatedAtMillis?.takeIf { it > 0L }
+                            ?: receivedAtMillis
+                    } else {
+                        previous?.sourceUpdatedAtMillis?.takeIf { it > 0L }
+                            ?: TsetmcProtocol.toSourceTimestamp(q.dEven, 0, fallbackToToday = false)
+                                .takeIf { it > 0L }
+                            ?: 0L
+                    }
+"""
+if old_q_price not in r:
+    raise SystemExit("v4.11 TSETMC quote/price anchor not found")
+r = r.replace(old_q_price, new_q_price, 1)
+repo.write_text(r)
+
+gradle = Path("source/app/build.gradle.kts")
+g = gradle.read_text()
+m = re.search(r"versionCode\s*=\s*(\d+)", g)
+if m:
+    next_code = max(int(m.group(1)) + 1, 23)
+    g = re.sub(r"versionCode\s*=\s*\d+", f"versionCode = {next_code}", g, count=1)
+g = re.sub(
+    r'versionName\s*=\s*"[^"]+"',
+    'versionName = "4.11-last-price-symbol-size"',
+    g,
+    count=1
+)
+gradle.write_text(g)
