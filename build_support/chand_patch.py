@@ -4574,3 +4574,138 @@ gradle = Path("source/app/build.gradle.kts")
 g = gradle.read_text()
 g = re.sub(r"versionCode\s*=\s*\d+", "versionCode = 43", g, count=1)
 gradle.write_text(g)
+
+
+# --- ROBUST LOCKED PULL REFRESH VIA NESTED SCROLL ---
+# Replace only the previous pointer gesture with Compose nested-scroll observation.
+# This does not consume scrolling; it only detects a downward pull while already at top.
+
+ui_file = root / "MainActivity.kt"
+u = ui_file.read_text()
+
+# Remove old pointer gesture imports if present.
+for line in [
+    "import androidx.compose.foundation.gestures.awaitEachGesture\n",
+    "import androidx.compose.foundation.gestures.awaitFirstDown\n",
+    "import androidx.compose.ui.input.pointer.positionChange\n",
+]:
+    u = u.replace(line, "")
+
+# Add nested-scroll imports.
+nested_anchor = "import androidx.compose.ui.geometry.Offset\n"
+nested_imports = (
+    "import androidx.compose.ui.input.nestedscroll.NestedScrollConnection\n"
+    "import androidx.compose.ui.input.nestedscroll.NestedScrollSource\n"
+    "import androidx.compose.ui.input.nestedscroll.nestedScroll\n"
+    "import androidx.compose.ui.unit.Velocity\n"
+)
+if "import androidx.compose.ui.input.nestedscroll.NestedScrollConnection\n" not in u:
+    if nested_anchor not in u:
+        raise SystemExit("nested pull: Offset import anchor not found")
+    u = u.replace(nested_anchor, nested_anchor + nested_imports, 1)
+
+grid_start = u.find("@Composable\nprivate fun MarketGrid(")
+card_start = u.find("@Composable\nprivate fun MarketCard(", grid_start + 1)
+if grid_start < 0 or card_start <= grid_start:
+    raise SystemExit("nested pull: MarketGrid range not found")
+grid = u[grid_start:card_start]
+
+# Add robust pull connection immediately after gridState.
+if "val pullRefreshConnection = remember(" not in grid:
+    state_anchor = "    val gridState = rememberLazyGridState()\n"
+    if state_anchor not in grid:
+        raise SystemExit("nested pull: gridState anchor not found")
+    connection = """    val gridState = rememberLazyGridState()
+    val density = androidx.compose.ui.platform.LocalDensity.current
+    val pullRefreshConnection = remember(gridState, onPullRefresh, density) {
+        object : NestedScrollConnection {
+            private var pulled = 0f
+            private var fired = false
+            private val triggerPx = with(density) { 72.dp.toPx() }
+
+            override fun onPreScroll(
+                available: Offset,
+                source: NestedScrollSource
+            ): Offset {
+                if (source == NestedScrollSource.UserInput) {
+                    if (!gridState.canScrollBackward && available.y > 0f) {
+                        if (!fired) {
+                            pulled += available.y
+                            if (pulled >= triggerPx) {
+                                fired = true
+                                onPullRefresh()
+                            }
+                        }
+                    } else if (available.y < 0f || gridState.canScrollBackward) {
+                        pulled = 0f
+                        fired = false
+                    }
+                }
+                return Offset.Zero
+            }
+
+            override suspend fun onPostFling(
+                consumed: Velocity,
+                available: Velocity
+            ): Velocity {
+                pulled = 0f
+                fired = false
+                return Velocity.Zero
+            }
+        }
+    }
+"""
+    grid = grid.replace(state_anchor, connection, 1)
+
+# Remove the old pointerInput block from the LazyVerticalGrid modifier.
+old_pointer = """.pointerInput(gridState, onPullRefresh) {
+                val triggerDistance = 84.dp.toPx()
+                awaitEachGesture {
+                    awaitFirstDown(requireUnconsumed = false)
+                    var pullDistance = 0f
+                    var fired = false
+
+                    do {
+                        val event = awaitPointerEvent()
+                        val change = event.changes.firstOrNull() ?: break
+
+                        if (!gridState.canScrollBackward && !fired) {
+                            val dy = change.positionChange().y
+                            pullDistance = if (dy > 0f) {
+                                pullDistance + dy
+                            } else {
+                                (pullDistance + dy).coerceAtLeast(0f)
+                            }
+
+                            if (pullDistance >= triggerDistance) {
+                                fired = true
+                                onPullRefresh()
+                            }
+                        } else if (gridState.canScrollBackward) {
+                            pullDistance = 0f
+                        }
+                    } while (event.changes.any { it.pressed })
+                }
+            }"""
+if old_pointer in grid:
+    grid = grid.replace(old_pointer, ".nestedScroll(pullRefreshConnection)", 1)
+elif ".nestedScroll(pullRefreshConnection)" not in grid:
+    # Fallback: add nestedScroll after the light-mode background block.
+    bg_end = """                    Color.Transparent
+            )"""
+    if bg_end not in grid:
+        raise SystemExit("nested pull: grid background anchor not found")
+    grid = grid.replace(
+        bg_end,
+        bg_end + "\n            .nestedScroll(pullRefreshConnection)",
+        1
+    )
+
+u = u[:grid_start] + grid + u[card_start:]
+ui_file.write_text(u)
+
+# Installation-only bump.
+gradle = Path("source/app/build.gradle.kts")
+g = gradle.read_text()
+g = re.sub(r"versionCode\s*=\s*\d+", "versionCode = 44", g, count=1)
+gradle.write_text(g)
