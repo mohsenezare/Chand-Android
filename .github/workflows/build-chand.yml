@@ -101,6 +101,22 @@ jobs:
           echo "=== CALL ==="; sed -n '185,260p' source/app/src/main/java/ir/personal/chand/MainActivity.kt
           echo "=== SETTINGS ==="; sed -n '1540,1970p' source/app/src/main/java/ir/personal/chand/MainActivity.kt
 
+      - name: Package exact final source
+        shell: bash
+        run: |
+          set -euxo pipefail
+          rm -f Chand-v4.8.4-LOCKED-iOS-Light-Separated-Updates-Source.zip
+          cd source
+          zip -qr ../Chand-v4.8.4-LOCKED-iOS-Light-Separated-Updates-Source.zip . \
+            -x "*/build/*" ".gradle/*" "local.properties"
+
+      - name: Upload exact source artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: Chand-v4.8.4-LOCKED-Source
+          path: Chand-v4.8.4-LOCKED-iOS-Light-Separated-Updates-Source.zip
+          if-no-files-found: error
+
       - name: Build debug APK
         working-directory: source
         run: ./gradlew --no-daemon --stacktrace testDebugUnitTest assembleDebug
