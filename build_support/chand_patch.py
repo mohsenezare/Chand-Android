@@ -2087,65 +2087,59 @@ g = re.sub(
 gradle.write_text(g)
 
 
-# ---------------- final circular-logo + larger-name polish ----------------
-# Requested final UI-only polish:
-# - every downloaded symbol/company logo is clipped to a circle
-# - the market/symbol name in each card is slightly larger
-# No pricing, feeds, card dimensions, or other behavior is changed.
+# ---------------- LOCKED UI-ONLY POLISH ----------------
+# Base is EXACTLY the last verified real-logo build (839c7f2).
+# Only:
+#   1) clip the already-resolved REAL logo into the existing circular badge bounds
+#   2) make the market name one step larger
+# Everything else stays byte-for-byte from that verified patch.
 
 ui = root / "MainActivity.kt"
-z = ui.read_text()
+locked = ui.read_text()
 
-card_start = z.find("@Composable\nprivate fun MarketCard(")
-trend_start = z.find("private fun trendColor(", card_start + 1)
+# 1) Real logo source/resolution remains untouched; only its visual mask changes.
+needle = """    SubcomposeAsyncImage(
+        model = logoUrl,
+        contentDescription = item.name,
+        contentScale = ContentScale.Fit,
+        modifier = modifier,
+"""
+replacement = """    SubcomposeAsyncImage(
+        model = logoUrl,
+        contentDescription = item.name,
+        contentScale = ContentScale.Fit,
+        modifier = modifier.clip(CircleShape),
+"""
+if needle not in locked:
+    raise SystemExit("locked polish: real-logo renderer anchor not found")
+locked = locked.replace(needle, replacement, 1)
+
+# 2) Scope typography change ONLY to the primary card title.
+card_start = locked.find("@Composable\nprivate fun MarketCard(")
+trend_start = locked.find("private fun trendColor(", card_start + 1)
 if card_start < 0 or trend_start <= card_start:
-    raise SystemExit("final polish: MarketCard range not found")
-
-card = z[card_start:trend_start]
+    raise SystemExit("locked polish: MarketCard range not found")
+card = locked[card_start:trend_start]
 name_pos = card.find("text = item.name,")
 if name_pos < 0:
-    raise SystemExit("final polish: item.name not found")
-
-name_tail = card[name_pos:name_pos + 1200]
-name_tail_new = name_tail.replace(
+    raise SystemExit("locked polish: item.name not found")
+head = card[:name_pos]
+tail = card[name_pos:]
+tail = tail.replace(
     "fontSize = if (compact) 16.sp else 20.sp",
     "fontSize = if (compact) 17.sp else 21.sp",
     1
-).replace(
+)
+tail = tail.replace(
     "lineHeight = if (compact) 19.sp else 23.sp",
     "lineHeight = if (compact) 20.sp else 24.sp",
     1
 )
-card = card[:name_pos] + name_tail_new + card[name_pos + len(name_tail):]
-z = z[:card_start] + card + z[trend_start:]
+locked = locked[:card_start] + head + tail + locked[trend_start:]
+ui.write_text(locked)
 
-# Clip the dynamically loaded logo itself to a perfect circle.
-z = z.replace(
-    "modifier = modifier,\n        loading = {",
-    "modifier = modifier.clip(CircleShape),\n        loading = {",
-    1
-)
-
-ui.write_text(z)
-
+# Installation-only bump so it can install over the previous test APK.
 gradle = Path("source/app/build.gradle.kts")
 g = gradle.read_text()
-g = re.sub(r"versionCode\s*=\s*\d+", "versionCode = 29", g, count=1)
-g = re.sub(
-    r'versionName\s*=\s*"[^"]+"',
-    'versionName = "4.8.5-circular-logos-larger-name"',
-    g,
-    count=1
-)
+g = re.sub(r"versionCode\s*=\s*\d+", "versionCode = 30", g, count=1)
 gradle.write_text(g)
-
-
-# ---------------- ensure clip import for final polish ----------------
-ui = root / "MainActivity.kt"
-zz = ui.read_text()
-if "import androidx.compose.ui.draw.clip\n" not in zz:
-    anchor = "import androidx.compose.ui.Modifier\n"
-    if anchor not in zz:
-        raise SystemExit("clip import anchor not found")
-    zz = zz.replace(anchor, anchor + "import androidx.compose.ui.draw.clip\n", 1)
-ui.write_text(zz)
