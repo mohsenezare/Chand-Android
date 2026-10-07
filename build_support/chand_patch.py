@@ -1052,3 +1052,63 @@ if m:
     g = re.sub(r"versionCode\s*=\s*\d+", f"versionCode = {next_code}", g, count=1)
 g = re.sub(r'versionName\s*=\s*"[^"]+"', 'versionName = "4.3-status-percent"', g, count=1)
 gradle.write_text(g)
+
+
+# ---------------- Adaptive list-card text fix ----------------
+ui = root / "MainActivity.kt"
+u = ui.read_text()
+
+# List mode must not inherit the short wide-card aspect ratio. Give it enough
+# vertical room for the header, status, change and full price text.
+if "import androidx.compose.foundation.layout.heightIn\n" not in u:
+    import_anchor = "import androidx.compose.foundation.layout.height\n"
+    if import_anchor in u:
+        u = u.replace(import_anchor, import_anchor + "import androidx.compose.foundation.layout.heightIn\n", 1)
+    else:
+        u = u.replace(
+            "import androidx.compose.foundation.layout.fillMaxWidth\n",
+            "import androidx.compose.foundation.layout.fillMaxWidth\nimport androidx.compose.foundation.layout.heightIn\n",
+            1
+        )
+
+old_modifier = """.fillMaxWidth()
+                    .aspectRatio(if (gridMode) 1.12f else 2.25f)
+                    .pointerInput(item.id, gridMode) {"""
+new_modifier = """.fillMaxWidth()
+                    .then(
+                        if (gridMode) Modifier.aspectRatio(1.12f)
+                        else Modifier.heightIn(min = 205.dp)
+                    )
+                    .pointerInput(item.id, gridMode) {"""
+if old_modifier not in u:
+    raise SystemExit("MarketGrid aspect-ratio anchor not found")
+u = u.replace(old_modifier, new_modifier, 1)
+
+# Let long names wrap in list mode instead of truncating after one line.
+old_name = """                            textAlign = TextAlign.End,
+                            maxLines = 1,
+                            overflow = TextOverflow.Ellipsis
+"""
+new_name = """                            textAlign = TextAlign.End,
+                            maxLines = if (gridMode) 2 else 3,
+                            overflow = TextOverflow.Ellipsis
+"""
+name_pos = u.find("text = item.name")
+if name_pos < 0:
+    raise SystemExit("item.name anchor not found")
+tail = u[name_pos:]
+if old_name not in tail:
+    raise SystemExit("item.name maxLines anchor not found")
+tail = tail.replace(old_name, new_name, 1)
+u = u[:name_pos] + tail
+
+ui.write_text(u)
+
+gradle = Path("source/app/build.gradle.kts")
+g = gradle.read_text()
+m = re.search(r"versionCode\s*=\s*(\d+)", g)
+if m:
+    next_code = max(int(m.group(1)), 17)
+    g = re.sub(r"versionCode\s*=\s*\d+", f"versionCode = {next_code}", g, count=1)
+g = re.sub(r'versionName\s*=\s*"[^"]+"', 'versionName = "4.4-adaptive-cards"', g, count=1)
+gradle.write_text(g)
