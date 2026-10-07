@@ -2942,3 +2942,17 @@ gradle = Path("source/app/build.gradle.kts")
 g = gradle.read_text()
 g = re.sub(r"versionCode\s*=\s*\d+", "versionCode = 40", g, count=1)
 gradle.write_text(g)
+
+
+# --- FIX LOCKED SETTINGS HELPER CLOSURE ---
+# Close only the CatalogUpdateCard helper before the untouched ManageItemsDialog.
+u = ui_file.read_text()
+manage_marker = "@Composable\nprivate fun ManageItemsDialog("
+manage_pos = u.find(manage_marker)
+if manage_pos < 0:
+    raise SystemExit("v4.8.4 updater UI: ManageItemsDialog marker not found")
+prefix = u[:manage_pos]
+if "private fun CatalogUpdateCard(" in prefix:
+    # The updater helper intentionally lives immediately before ManageItemsDialog.
+    u = u[:manage_pos] + "}\n\n" + u[manage_pos:]
+ui_file.write_text(u)
