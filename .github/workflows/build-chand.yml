@@ -74,6 +74,16 @@ jobs:
         run: |
           set -euxo pipefail
           grep -nE 'originLabel|DataOrigin\.LIVE|item\.origin|item\.source|MarketFormatting|Text\(' source/app/src/main/java/ir/personal/chand/MainActivity.kt | sed -n '1,220p'
+      - name: Inspect Investing migration source
+        shell: bash
+        run: |
+          set -euxo pipefail
+          echo "=== MODELS 1-280 ==="; sed -n '1,280p' source/app/src/main/java/ir/personal/chand/data/MarketModels.kt
+          echo "=== TV CLIENT FULL ==="; cat source/app/src/main/java/ir/personal/chand/data/TradingViewStreamClient.kt
+          echo "=== REPO 1-220 ==="; sed -n '1,220p' source/app/src/main/java/ir/personal/chand/data/MarketRepository.kt
+          echo "=== REPO 680-830 ==="; sed -n '680,830p' source/app/src/main/java/ir/personal/chand/data/MarketRepository.kt
+          echo "=== VM 1-220 ==="; sed -n '1,220p' source/app/src/main/java/ir/personal/chand/MainViewModel.kt
+
       - name: Apply final v4.0 UI/live fixes
         shell: bash
         run: |
