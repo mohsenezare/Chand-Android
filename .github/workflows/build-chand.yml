@@ -74,16 +74,6 @@ jobs:
         run: |
           set -euxo pipefail
           grep -nE 'originLabel|DataOrigin\.LIVE|item\.origin|item\.source|MarketFormatting|Text\(' source/app/src/main/java/ir/personal/chand/MainActivity.kt | sed -n '1,220p'
-      - name: Inspect Investing migration source
-        shell: bash
-        run: |
-          set -euxo pipefail
-          echo "=== MODELS 1-280 ==="; sed -n '1,280p' source/app/src/main/java/ir/personal/chand/data/MarketModels.kt
-          echo "=== TV CLIENT FULL ==="; cat source/app/src/main/java/ir/personal/chand/data/TradingViewStreamClient.kt
-          echo "=== REPO 1-220 ==="; sed -n '1,220p' source/app/src/main/java/ir/personal/chand/data/MarketRepository.kt
-          echo "=== REPO 680-830 ==="; sed -n '680,830p' source/app/src/main/java/ir/personal/chand/data/MarketRepository.kt
-          echo "=== VM 1-220 ==="; sed -n '1,220p' source/app/src/main/java/ir/personal/chand/MainViewModel.kt
-
       - name: Apply final v4.0 UI/live fixes
         shell: bash
         run: |
@@ -102,7 +92,55 @@ jobs:
 
       - name: Provider probe (non-blocking)
         shell: bash
-        run: echo "Live provider probes are optional; APK build is authoritative."
+        run: |
+          python3 - <<'PY'
+          import json, urllib.parse, urllib.request, uuid
+
+          headers = {
+              "User-Agent": "Mozilla/5.0 (Linux; Android 14) AppleWebKit/537.36 Chrome/126 Mobile Safari/537.36",
+              "Referer": "https://tvc-invdn-com.investing.com/",
+              "Accept": "application/json,text/plain,*/*",
+              "Cache-Control": "no-cache",
+          }
+
+          def get(endpoint, params):
+              url = (
+                  "https://tvc6.investing.com/"
+                  + uuid.uuid4().hex
+                  + "/0/0/0/0/"
+                  + endpoint
+                  + "?"
+                  + urllib.parse.urlencode(params)
+              )
+              req = urllib.request.Request(url, headers=headers)
+              with urllib.request.urlopen(req, timeout=12) as response:
+                  return json.loads(response.read().decode("utf-8"))
+
+          try:
+              for query in ("XAU/USD", "BTC/USD"):
+                  rows = get("search", {"query": query, "limit": 8, "type": "", "exchange": ""})
+                  assert isinstance(rows, list) and rows, "empty Investing search"
+                  normalized = query.replace("/", "").upper()
+                  ranked = sorted(
+                      rows,
+                      key=lambda row: (
+                          str(row.get("symbol", "")).replace("/", "").replace("-", "").upper() == normalized,
+                          query.lower() in str(row.get("description", "")).lower(),
+                      ),
+                      reverse=True,
+                  )
+                  symbol = ranked[0].get("full_name") or (
+                      str(ranked[0].get("exchange", "")) + ":" + str(ranked[0].get("symbol", ""))
+                  )
+                  quote = get("quotes", {"symbols": symbol})
+                  data = quote.get("d") or []
+                  assert data and isinstance(data[0].get("v"), dict), "empty Investing quote"
+                  price = data[0]["v"].get("lp")
+                  assert price is not None and float(price) > 0, "invalid Investing price"
+                  print(f"INVESTING_OK {query} {symbol} price={price}")
+          except Exception as exc:
+              print("INVESTING_PROBE_WARNING", repr(exc))
+          PY
 
       - name: Collect APK
         shell: bash
