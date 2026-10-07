@@ -1816,7 +1816,7 @@ private fun MarketBadge(
         model = logoUrl,
         contentDescription = item.name,
         contentScale = ContentScale.Fit,
-        modifier = modifier.clip(CircleShape),
+        modifier = modifier,
         loading = {
             SymbolSpecificFallbackBadge(item, Modifier.fillMaxSize())
         },
