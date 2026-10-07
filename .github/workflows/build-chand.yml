@@ -94,6 +94,13 @@ jobs:
           set -euxo pipefail
           python3 build_support/chand_patch.py
 
+      - name: Inspect locked v4.8.4 patched settings
+        shell: bash
+        run: |
+          set -euxo pipefail
+          echo "=== CALL ==="; sed -n '185,260p' source/app/src/main/java/ir/personal/chand/MainActivity.kt
+          echo "=== SETTINGS ==="; sed -n '1540,1970p' source/app/src/main/java/ir/personal/chand/MainActivity.kt
+
       - name: Build debug APK
         working-directory: source
         run: ./gradlew --no-daemon --stacktrace testDebugUnitTest assembleDebug
