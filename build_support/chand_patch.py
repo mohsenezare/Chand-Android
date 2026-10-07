@@ -4267,3 +4267,150 @@ gradle = Path("source/app/build.gradle.kts")
 g = gradle.read_text()
 g = re.sub(r"versionCode\s*=\s*\d+", "versionCode = 42", g, count=1)
 gradle.write_text(g)
+
+
+# --- FIX v4.8.4 pull gesture without Material3 pull API ---
+# Material3 in this project does not expose PullToRefreshBox.
+# Implement a non-consuming pull gesture directly on the existing LazyVerticalGrid.
+
+ui_file = root / "MainActivity.kt"
+u = ui_file.read_text()
+
+u = u.replace(
+    "import androidx.compose.material3.pulltorefresh.PullToRefreshBox\n",
+    ""
+)
+
+if "import androidx.compose.ui.input.pointer.awaitEachGesture\n" not in u:
+    anchor = "import androidx.compose.ui.input.pointer.pointerInput\n"
+    if anchor not in u:
+        raise SystemExit("pull fix: pointerInput import anchor not found")
+    u = u.replace(
+        anchor,
+        anchor +
+        "import androidx.compose.ui.input.pointer.awaitEachGesture\n" +
+        "import androidx.compose.ui.input.pointer.awaitFirstDown\n" +
+        "import androidx.compose.ui.input.pointer.positionChange\n",
+        1
+    )
+
+pull_box = """            PullToRefreshBox(
+                isRefreshing = state.pullRefreshing,
+                onRefresh = viewModel::pullToRefresh,
+                modifier = Modifier.weight(1f)
+            ) {
+                Box(modifier = Modifier.fillMaxSize()) {
+                    when {
+                        state.loading && state.snapshot == null -> CircularProgressIndicator(
+                            color = ChandMuted,
+                            strokeWidth = 2.dp,
+                            modifier = Modifier.align(Alignment.Center)
+                        )
+                        state.visibleItems.isEmpty() -> EmptyState {
+                            viewModel.loadCatalog(CatalogSource.MARKETS)
+                            manageOpen = true
+                        }
+                        else -> MarketGrid(
+                            items = state.visibleItems,
+                            gridMode = state.settings.gridMode,
+                            onItemClick = { viewModel.showChart(it.id) },
+                            onMove = viewModel::moveVisibleItem
+                        )
+                    }
+                }
+            }
+"""
+plain_box = """            Box(modifier = Modifier.weight(1f)) {
+                when {
+                    state.loading && state.snapshot == null -> CircularProgressIndicator(
+                        color = ChandMuted,
+                        strokeWidth = 2.dp,
+                        modifier = Modifier.align(Alignment.Center)
+                    )
+                    state.visibleItems.isEmpty() -> EmptyState {
+                        viewModel.loadCatalog(CatalogSource.MARKETS)
+                        manageOpen = true
+                    }
+                    else -> MarketGrid(
+                        items = state.visibleItems,
+                        gridMode = state.settings.gridMode,
+                        onItemClick = { viewModel.showChart(it.id) },
+                        onMove = viewModel::moveVisibleItem,
+                        onPullRefresh = viewModel::pullToRefresh
+                    )
+                }
+
+                if (state.pullRefreshing) {
+                    CircularProgressIndicator(
+                        color = ChandMuted,
+                        strokeWidth = 2.dp,
+                        modifier = Modifier
+                            .align(Alignment.TopCenter)
+                            .padding(top = 8.dp)
+                            .size(22.dp)
+                    )
+                }
+            }
+"""
+if pull_box in u:
+    u = u.replace(pull_box, plain_box, 1)
+elif "onPullRefresh = viewModel::pullToRefresh" not in u:
+    raise SystemExit("pull fix: PullToRefreshBox block not found")
+
+# Add callback to MarketGrid only.
+grid_start = u.find("@Composable\nprivate fun MarketGrid(")
+card_start = u.find("@Composable\nprivate fun MarketCard(", grid_start + 1)
+if grid_start < 0 or card_start <= grid_start:
+    raise SystemExit("pull fix: MarketGrid range not found")
+grid = u[grid_start:card_start]
+
+if "onPullRefresh: () -> Unit" not in grid:
+    grid = grid.replace(
+        """    onItemClick: (MarketItem) -> Unit,
+    onMove: (String, Int) -> Unit
+) {""",
+        """    onItemClick: (MarketItem) -> Unit,
+    onMove: (String, Int) -> Unit,
+    onPullRefresh: () -> Unit
+) {""",
+        1
+    )
+
+old_modifier = "        modifier = Modifier.fillMaxSize()\n"
+new_modifier = """        modifier = Modifier
+            .fillMaxSize()
+            .pointerInput(gridState, onPullRefresh) {
+                val triggerDistance = 84.dp.toPx()
+                awaitEachGesture {
+                    awaitFirstDown(requireUnconsumed = false)
+                    var pullDistance = 0f
+                    var fired = false
+
+                    do {
+                        val event = awaitPointerEvent()
+                        val change = event.changes.firstOrNull() ?: break
+
+                        if (!gridState.canScrollBackward && !fired) {
+                            val dy = change.positionChange().y
+                            pullDistance = if (dy > 0f) {
+                                pullDistance + dy
+                            } else {
+                                (pullDistance + dy).coerceAtLeast(0f)
+                            }
+
+                            if (pullDistance >= triggerDistance) {
+                                fired = true
+                                onPullRefresh()
+                            }
+                        } else if (gridState.canScrollBackward) {
+                            pullDistance = 0f
+                        }
+                    } while (event.changes.any { it.pressed })
+                }
+            }
+"""
+if old_modifier in grid and "triggerDistance = 84.dp.toPx()" not in grid:
+    grid = grid.replace(old_modifier, new_modifier, 1)
+
+u = u[:grid_start] + grid + u[card_start:]
+ui_file.write_text(u)
