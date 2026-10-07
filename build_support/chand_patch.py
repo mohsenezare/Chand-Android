@@ -1689,3 +1689,409 @@ g = re.sub(
     count=1
 )
 gradle.write_text(g)
+
+
+# ---------------- v4.8.4 single-line names + symbol logos ----------------
+# UI-only patch on the v4.8 line:
+# 1) Market names stay on one line and ellipsize.
+# 2) Card badges resolve a real symbol/company logo when available.
+# All pricing, live feeds, layout dimensions and other behavior remain unchanged.
+
+ui = root / "MainActivity.kt"
+u = ui.read_text()
+
+# Add imports for async logo loading/resolution.
+import_pairs = [
+    (
+        "import androidx.compose.ui.text.style.TextOverflow\n",
+        "import androidx.compose.ui.text.style.TextOverflow\nimport androidx.compose.ui.draw.clip\nimport androidx.compose.ui.layout.ContentScale\n"
+    ),
+    (
+        "import androidx.compose.runtime.remember\n",
+        "import androidx.compose.runtime.remember\nimport androidx.compose.runtime.produceState\n"
+    ),
+]
+for anchor, replacement in import_pairs:
+    if replacement.splitlines()[-1] not in u and anchor in u:
+        u = u.replace(anchor, replacement, 1)
+
+extra_imports = """import coil.compose.SubcomposeAsyncImage
+import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.withContext
+import org.json.JSONArray
+import org.json.JSONObject
+import java.net.HttpURLConnection
+import java.net.URLEncoder
+import java.net.URL
+import java.nio.charset.StandardCharsets
+import java.util.concurrent.ConcurrentHashMap
+"""
+if "import coil.compose.SubcomposeAsyncImage" not in u:
+    package_end = u.find("\n\n", u.find("package "))
+    # Insert after the existing import block's first import to preserve package placement.
+    first_import = u.find("import ", package_end)
+    if first_import < 0:
+        raise SystemExit("v4.8.4 import block not found")
+    u = u[:first_import] + extra_imports + u[first_import:]
+
+# Locate only the MarketCard function so detail screens remain untouched.
+card_start = u.find("@Composable\nprivate fun MarketCard(")
+trend_start = u.find("private fun trendColor(", card_start + 1)
+if card_start < 0 or trend_start <= card_start:
+    raise SystemExit("v4.8.4 MarketCard range not found")
+card = u[card_start:trend_start]
+
+# Keep every card title to one line. Long names end with ellipsis instead of
+# pushing code/status/price downward.
+card = card.replace(
+    "maxLines = if (gridMode) 2 else 3,\n                            overflow = TextOverflow.Ellipsis",
+    "maxLines = 1,\n                            softWrap = false,\n                            overflow = TextOverflow.Ellipsis",
+    1
+)
+
+# Also catch the exact v4.8 card variant if it used a fixed 2-line title.
+name_anchor = "text = item.name,"
+name_pos = card.find(name_anchor)
+if name_pos < 0:
+    raise SystemExit("v4.8.4 item.name not found")
+name_tail = card[name_pos:]
+if "maxLines = 1," not in name_tail[:900]:
+    name_tail = name_tail.replace(
+        "maxLines = 2,\n                            overflow = TextOverflow.Ellipsis",
+        "maxLines = 1,\n                            softWrap = false,\n                            overflow = TextOverflow.Ellipsis",
+        1
+    )
+    card = card[:name_pos] + name_tail
+
+# Replace the card's generic badge only; do not touch detail-page badges.
+badge_patterns = [
+    "MarketBadge(item, Modifier.size(if (compact) 43.dp else 52.dp))",
+    "MarketBadge(item, Modifier.size(if (compact) 45.dp else 54.dp))",
+]
+replaced_badge = False
+for old_badge in badge_patterns:
+    if old_badge in card:
+        card = card.replace(
+            old_badge,
+            "SymbolLogoBadge(item, Modifier.size(if (compact) 43.dp else 52.dp))"
+            if "43.dp" in old_badge
+            else "SymbolLogoBadge(item, Modifier.size(if (compact) 45.dp else 54.dp))",
+            1
+        )
+        replaced_badge = True
+        break
+if not replaced_badge:
+    raise SystemExit("v4.8.4 card badge anchor not found")
+
+u = u[:card_start] + card + u[trend_start:]
+
+# Add logo resolver immediately before the existing MarketBadge implementation.
+badge_fn = "@Composable\nprivate fun MarketBadge("
+badge_pos = u.find(badge_fn)
+if badge_pos < 0:
+    raise SystemExit("v4.8.4 MarketBadge function not found")
+
+logo_helpers = r'''
+private val SymbolLogoUrlCache = ConcurrentHashMap<String, String>()
+
+@Composable
+private fun SymbolLogoBadge(
+    item: MarketItem,
+    modifier: Modifier = Modifier
+) {
+    val cacheKey = item.source.name + "|" + item.code.trim() + "|" + item.name.trim()
+    val logoUrlState = produceState<String?>(
+        initialValue = SymbolLogoUrlCache[cacheKey]?.takeIf(String::isNotBlank),
+        key1 = cacheKey
+    ) {
+        val resolved = SymbolLogoUrlCache[cacheKey]?.takeIf(String::isNotBlank)
+            ?: withContext(Dispatchers.IO) {
+                runCatching { resolveMarketLogoUrl(item) }.getOrNull()
+            }
+        if (!resolved.isNullOrBlank()) {
+            SymbolLogoUrlCache[cacheKey] = resolved
+        } else {
+            SymbolLogoUrlCache.putIfAbsent(cacheKey, "")
+        }
+        value = resolved
+    }
+
+    val logoUrl = logoUrlState.value
+    if (logoUrl.isNullOrBlank()) {
+        SymbolSpecificFallbackBadge(item, modifier)
+        return
+    }
+
+    SubcomposeAsyncImage(
+        model = logoUrl,
+        contentDescription = item.name,
+        contentScale = ContentScale.Fit,
+        modifier = modifier.clip(CircleShape),
+        loading = {
+            SymbolSpecificFallbackBadge(item, Modifier.fillMaxSize())
+        },
+        error = {
+            SymbolSpecificFallbackBadge(item, Modifier.fillMaxSize())
+        }
+    )
+}
+
+@Composable
+private fun SymbolSpecificFallbackBadge(
+    item: MarketItem,
+    modifier: Modifier = Modifier
+) {
+    // Keep the polished built-in asset icons for FX/metals/energy/crypto.
+    // Iranian equities/funds and unknown global tickers get their own symbol,
+    // never the same generic category badge.
+    val code = item.code.trim()
+    val upper = code.uppercase(java.util.Locale.US)
+    val knownAsset = item.source == ir.personal.chand.data.MarketSource.TGJU ||
+        upper in setOf(
+            "USD", "EUR", "USDT", "GRAM", "EMAMI", "XAU/USD", "XAUUSD",
+            "BRENT", "UKOIL", "XAG/USD", "XAGUSD", "BTC", "BTCUSD", "ETH", "ETHUSD"
+        )
+
+    if (knownAsset) {
+        MarketBadge(item, modifier)
+        return
+    }
+
+    Surface(
+        modifier = modifier,
+        shape = CircleShape,
+        color = Color(0xFF25272C),
+        border = androidx.compose.foundation.BorderStroke(1.2.dp, Color(0xFF555A64))
+    ) {
+        Box(
+            modifier = Modifier.fillMaxSize(),
+            contentAlignment = Alignment.Center
+        ) {
+            val label = when {
+                code.isNotBlank() -> code.take(3)
+                item.name.isNotBlank() -> item.name.take(2)
+                else -> "•"
+            }
+            Text(
+                text = label,
+                color = Color(0xFFE7E8EB),
+                fontWeight = FontWeight.Bold,
+                fontSize = when {
+                    label.length <= 2 -> 12.sp
+                    else -> 9.sp
+                },
+                maxLines = 1,
+                overflow = TextOverflow.Clip
+            )
+        }
+    }
+}
+
+private fun resolveMarketLogoUrl(item: MarketItem): String? {
+    return when (item.source) {
+        ir.personal.chand.data.MarketSource.TSETMC -> resolveIranianSymbolLogo(item)
+        ir.personal.chand.data.MarketSource.TRADINGVIEW -> resolveGlobalSymbolLogo(item)
+        ir.personal.chand.data.MarketSource.TGJU -> resolveKnownAssetLogo(item)
+    }
+}
+
+private fun resolveKnownAssetLogo(item: MarketItem): String? {
+    val code = item.code.trim().uppercase(java.util.Locale.US)
+    return when (code) {
+        "USDT" -> "https://cryptologos.cc/logos/tether-usdt-logo.png"
+        "BTC", "BTCUSD", "BTC/USD" -> "https://cryptologos.cc/logos/bitcoin-btc-logo.png"
+        "ETH", "ETHUSD", "ETH/USD" -> "https://cryptologos.cc/logos/ethereum-eth-logo.png"
+        else -> null
+    }
+}
+
+private fun resolveGlobalSymbolLogo(item: MarketItem): String? {
+    val rawCode = item.code.trim()
+    if (rawCode.isBlank()) return null
+
+    // TradingView symbol search exposes a logoid for most listed securities,
+    // currencies and crypto assets. Coil's SVG module renders these directly.
+    val query = rawCode
+        .replace("/", "")
+        .replace(" ", "")
+        .ifBlank { item.name.trim() }
+
+    val url = "https://symbol-search.tradingview.com/symbol_search/?" +
+        "text=" + encodeUrl(query) +
+        "&hl=1&exchange=&lang=en&search_type=undefined&domain=production"
+
+    val body = httpText(url)
+    val rows = parseTradingViewRows(body)
+
+    val normalizedWanted = normalizeTicker(rawCode)
+    val best = (0 until rows.length())
+        .mapNotNull(rows::optJSONObject)
+        .maxByOrNull { row ->
+            val symbol = normalizeTicker(row.optString("symbol"))
+            val desc = row.optString("description")
+            var score = 0
+            if (symbol == normalizedWanted) score += 120
+            if (symbol.endsWith(normalizedWanted) || normalizedWanted.endsWith(symbol)) score += 40
+            if (desc.contains(item.name, ignoreCase = true)) score += 20
+            if (row.optString("logoid").isNotBlank()) score += 10
+            score
+        } ?: return financialModelingPrepLogo(rawCode)
+
+    val logoId = sequenceOf(
+        best.optString("logoid"),
+        best.optString("base_currency_logoid"),
+        best.optString("base-currency-logoid"),
+        best.optString("currency_logoid"),
+        best.optString("currency-logoid")
+    ).firstOrNull { it.isNotBlank() }
+
+    return if (!logoId.isNullOrBlank()) {
+        "https://s3-symbol-logo.tradingview.com/" + logoId.trim() + "--big.svg"
+    } else {
+        financialModelingPrepLogo(best.optString("symbol").ifBlank { rawCode })
+    }
+}
+
+private fun financialModelingPrepLogo(code: String): String? {
+    val ticker = code.substringAfterLast(':')
+        .replace("/", "")
+        .replace("-", "")
+        .trim()
+        .uppercase(java.util.Locale.US)
+    if (ticker.isBlank()) return null
+    return "https://financialmodelingprep.com/image-stock/" + encodeUrl(ticker) + ".png"
+}
+
+private fun resolveIranianSymbolLogo(item: MarketItem): String? {
+    val symbol = item.code.trim().ifBlank { item.name.trim() }
+    if (symbol.isBlank()) return null
+
+    // TSETMC's Codal publisher record usually includes the issuer website.
+    // Using that website's favicon/brandmark gives every company/fund its own
+    // identity while remaining fully dynamic for newly-added Iranian symbols.
+    val publisherUrl =
+        "https://cdn.tsetmc.com/api/Codal/GetCodalPublisherBySymbol/" + encodeUrl(symbol)
+
+    val body = httpText(publisherUrl)
+    val root = JSONObject(body)
+    val publisher = root.optJSONObject("codalPublisher") ?: root
+    val website = findWebsiteRecursively(publisher) ?: return null
+
+    val clean = website
+        .trim()
+        .removePrefix("http://")
+        .removePrefix("https://")
+        .substringBefore('/')
+        .removePrefix("www.")
+        .trim()
+
+    if (clean.isBlank() || !clean.contains('.')) return null
+
+    return "https://www.google.com/s2/favicons?sz=128&domain_url=https://" + encodeUrl(clean)
+}
+
+private fun findWebsiteRecursively(value: Any?): String? {
+    when (value) {
+        is JSONObject -> {
+            val keys = value.keys()
+            while (keys.hasNext()) {
+                val key = keys.next()
+                val raw = value.opt(key)
+                val lowered = key.lowercase(java.util.Locale.US)
+                if (raw is String &&
+                    (lowered.contains("web") ||
+                     lowered.contains("site") ||
+                     lowered.contains("url") ||
+                     lowered.contains("domain"))
+                ) {
+                    val candidate = raw.trim()
+                    if (candidate.startsWith("http://") ||
+                        candidate.startsWith("https://") ||
+                        (candidate.contains('.') && !candidate.contains(' '))
+                    ) {
+                        return candidate
+                    }
+                }
+            }
+            val nestedKeys = value.keys()
+            while (nestedKeys.hasNext()) {
+                val nested = findWebsiteRecursively(value.opt(nestedKeys.next()))
+                if (!nested.isNullOrBlank()) return nested
+            }
+        }
+        is JSONArray -> {
+            for (i in 0 until value.length()) {
+                val nested = findWebsiteRecursively(value.opt(i))
+                if (!nested.isNullOrBlank()) return nested
+            }
+        }
+    }
+    return null
+}
+
+private fun parseTradingViewRows(body: String): JSONArray {
+    val trimmed = body.trim()
+    if (trimmed.startsWith("[")) return JSONArray(trimmed)
+    val root = JSONObject(trimmed)
+    return root.optJSONArray("symbols")
+        ?: root.optJSONArray("data")
+        ?: root.optJSONArray("items")
+        ?: JSONArray()
+}
+
+private fun normalizeTicker(value: String): String =
+    value.uppercase(java.util.Locale.US)
+        .replace("/", "")
+        .replace("-", "")
+        .replace("_", "")
+        .replace(" ", "")
+        .substringAfterLast(':')
+
+private fun encodeUrl(value: String): String =
+    URLEncoder.encode(value, StandardCharsets.UTF_8.name())
+
+private fun httpText(url: String): String {
+    val connection = (URL(url).openConnection() as HttpURLConnection).apply {
+        connectTimeout = 5_000
+        readTimeout = 5_000
+        instanceFollowRedirects = true
+        setRequestProperty("Accept", "application/json,text/plain,*/*")
+        setRequestProperty(
+            "User-Agent",
+            "Mozilla/5.0 (Linux; Android 14) AppleWebKit/537.36 Chrome/126 Mobile Safari/537.36"
+        )
+    }
+    return try {
+        connection.inputStream.bufferedReader(Charsets.UTF_8).use { it.readText() }
+    } finally {
+        connection.disconnect()
+    }
+}
+
+'''
+u = u[:badge_pos] + logo_helpers + u[badge_pos:]
+ui.write_text(u)
+
+# Add Coil image/SVG support without changing any other dependencies.
+gradle = Path("source/app/build.gradle.kts")
+g = gradle.read_text()
+if 'io.coil-kt:coil-compose' not in g:
+    dep_anchor = "dependencies {"
+    if dep_anchor not in g:
+        raise SystemExit("v4.8.4 dependencies block not found")
+    g = g.replace(
+        dep_anchor,
+        dep_anchor + '''
+    implementation("io.coil-kt:coil-compose:2.7.0")
+    implementation("io.coil-kt:coil-svg:2.7.0")''',
+        1
+    )
+
+g = re.sub(r"versionCode\s*=\s*\d+", "versionCode = 27", g, count=1)
+g = re.sub(
+    r'versionName\s*=\s*"[^"]+"',
+    'versionName = "4.8.4-symbol-logos-single-line"',
+    g,
+    count=1
+)
+gradle.write_text(g)
