@@ -870,6 +870,20 @@ gradle.write_text(g)
 ui = root / "MainActivity.kt"
 u = ui.read_text()
 
+# Normalize the older workflow-injected LIVE overlay first; this keeps the card clean
+# and gives the new status component full control of LIVE/CLOSED rendering.
+u = re.sub(
+    r'''                    Box\(modifier = Modifier\.size\(if \(compact\) 45\.dp else 54\.dp\)\) \{\n
+                        MarketBadge\(item, Modifier\.fillMaxSize\(\)\)\n
+                        if \(item\.origin == DataOrigin\.LIVE\) \{.*?
+                        \}\n
+                    \}\n'''.replace("\n", ""),
+    "                    MarketBadge(item, Modifier.size(if (compact) 45.dp else 54.dp))\n",
+    u,
+    count=1,
+    flags=re.S,
+)
+
 badge_anchor = "                    MarketBadge(item, Modifier.size(if (compact) 45.dp else 54.dp))\n                    Spacer(Modifier.weight(1f))\n"
 badge_replacement = """                    Row(
                         verticalAlignment = Alignment.CenterVertically
