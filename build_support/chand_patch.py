@@ -891,6 +891,17 @@ private fun MarketCard(
     ) {
         BoxWithConstraints(Modifier.fillMaxSize()) {
             val compact = maxWidth < 185.dp
+            val priceText = MarketFormatting.price(item)
+            val priceFontSize = when {
+                compact && priceText.length >= 16 -> 21.sp
+                compact && priceText.length >= 13 -> 24.sp
+                compact && priceText.length >= 10 -> 27.sp
+                compact -> 31.sp
+                priceText.length >= 18 -> 31.sp
+                priceText.length >= 15 -> 35.sp
+                else -> 42.sp
+            }
+
             Column(
                 modifier = Modifier
                     .fillMaxSize()
@@ -900,18 +911,7 @@ private fun MarketCard(
                     modifier = Modifier.fillMaxWidth(),
                     verticalAlignment = Alignment.Top
                 ) {
-                    Row(verticalAlignment = Alignment.CenterVertically) {
-                        MarketBadge(item, Modifier.size(if (compact) 45.dp else 54.dp))
-                        Spacer(Modifier.width(if (compact) 4.dp else 6.dp))
-                        Text(
-                            text = compactPercent(item),
-                            color = percentColor(item),
-                            fontSize = if (compact) 9.sp else 10.sp,
-                            lineHeight = if (compact) 10.sp else 11.sp,
-                            fontWeight = FontWeight.SemiBold,
-                            maxLines = 1
-                        )
-                    }
+                    MarketBadge(item, Modifier.size(if (compact) 45.dp else 54.dp))
                     Spacer(Modifier.weight(1f))
                     Column(horizontalAlignment = Alignment.End) {
                         Text(
@@ -924,20 +924,27 @@ private fun MarketCard(
                             maxLines = 1,
                             overflow = TextOverflow.Ellipsis
                         )
-                        Spacer(Modifier.height(3.dp))
+                        Spacer(Modifier.height(4.dp))
                         Row(
                             verticalAlignment = Alignment.CenterVertically,
-                            horizontalArrangement = Arrangement.spacedBy(5.dp)
+                            horizontalArrangement = Arrangement.spacedBy(if (compact) 4.dp else 6.dp)
                         ) {
-                            MarketStatusLabel(item, compact)
                             Text(
                                 text = item.code,
                                 color = ChandMuted,
-                                fontSize = if (compact) 13.sp else 16.sp,
+                                fontSize = if (compact) 12.sp else 14.sp,
                                 fontWeight = FontWeight.SemiBold,
-                                textAlign = TextAlign.End,
                                 maxLines = 1,
                                 overflow = TextOverflow.Ellipsis
+                            )
+                            MarketStatusLabel(item, compact)
+                            Text(
+                                text = compactPercent(item),
+                                color = percentColor(item),
+                                fontSize = if (compact) 9.sp else 10.sp,
+                                lineHeight = if (compact) 10.sp else 11.sp,
+                                fontWeight = FontWeight.SemiBold,
+                                maxLines = 1
                             )
                         }
                     }
@@ -948,20 +955,21 @@ private fun MarketCard(
                 Text(
                     text = MarketFormatting.change(item),
                     color = trendColor(item),
-                    fontSize = if (compact) 19.sp else 24.sp,
-                    lineHeight = if (compact) 22.sp else 28.sp,
+                    fontSize = if (compact) 17.sp else 22.sp,
+                    lineHeight = if (compact) 20.sp else 25.sp,
                     fontWeight = FontWeight.Medium,
                     maxLines = 1
                 )
                 Spacer(Modifier.height(if (compact) 2.dp else 5.dp))
                 Text(
-                    text = MarketFormatting.price(item),
+                    text = priceText,
                     color = if (item.isAvailable) Color.White else ChandMuted,
-                    fontSize = if (compact) 31.sp else 42.sp,
-                    lineHeight = if (compact) 34.sp else 45.sp,
+                    fontSize = priceFontSize,
+                    lineHeight = priceFontSize * 1.08f,
                     fontWeight = FontWeight.Black,
-                    letterSpacing = (-1.1).sp,
+                    letterSpacing = (-0.8).sp,
                     maxLines = 1,
+                    softWrap = false,
                     overflow = TextOverflow.Clip
                 )
             }
@@ -1108,7 +1116,7 @@ gradle = Path("source/app/build.gradle.kts")
 g = gradle.read_text()
 m = re.search(r"versionCode\s*=\s*(\d+)", g)
 if m:
-    next_code = max(int(m.group(1)), 17)
+    next_code = max(int(m.group(1)), 18)
     g = re.sub(r"versionCode\s*=\s*\d+", f"versionCode = {next_code}", g, count=1)
-g = re.sub(r'versionName\s*=\s*"[^"]+"', 'versionName = "4.4-adaptive-cards"', g, count=1)
+g = re.sub(r'versionName\s*=\s*"[^"]+"', 'versionName = "4.5-price-safe-info-row"', g, count=1)
 gradle.write_text(g)
