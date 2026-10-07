@@ -2331,3 +2331,344 @@ if "suspend fun refreshIranMarketCatalogStrict(" not in r:
     r = r[:insertion] + methods + r[insertion:]
 
 repo_file.write_text(r)
+
+
+# --- LOCKED v4.8.4 CATALOG UPDATE VIEWMODEL ---
+vm_file = root / "MainViewModel.kt"
+v = vm_file.read_text()
+
+if "import org.json.JSONArray\n" not in v:
+    import_anchor = "import kotlinx.coroutines.withTimeoutOrNull\n"
+    if import_anchor not in v:
+        raise SystemExit("v4.8.4 updater VM: import anchor not found")
+    v = v.replace(
+        import_anchor,
+        import_anchor + "import org.json.JSONArray\nimport org.json.JSONObject\n",
+        1
+    )
+
+if "data class CatalogUpdateUiState(" not in v:
+    chand_state = v.find("data class ChandUiState(")
+    if chand_state < 0:
+        raise SystemExit("v4.8.4 updater VM: ChandUiState not found")
+    update_state = '''data class CatalogUpdateUiState(
+val running: Boolean = false,
+val progress: Int = 0,
+val success: Boolean? = null,
+val message: String? = null
+)
+
+'''
+    v = v[:chand_state] + update_state + v[chand_state:]
+
+if "val iranMarketUpdate: CatalogUpdateUiState" not in v:
+    anchor = "val catalogMessage: String? = null\n"
+    if anchor not in v:
+        raise SystemExit("v4.8.4 updater VM: catalogMessage anchor not found")
+    v = v.replace(
+        anchor,
+        """val catalogMessage: String? = null,
+val iranMarketUpdate: CatalogUpdateUiState = CatalogUpdateUiState(),
+val iranStockUpdate: CatalogUpdateUiState = CatalogUpdateUiState(),
+val globalMarketUpdate: CatalogUpdateUiState = CatalogUpdateUiState()
+""",
+        1
+    )
+
+if "private val catalogCachePrefs" not in v:
+    anchor = "private val repository = MarketRepository(application)\n"
+    if anchor not in v:
+        raise SystemExit("v4.8.4 updater VM: repository anchor not found")
+    v = v.replace(
+        anchor,
+        anchor + """private val catalogCachePrefs = application.getSharedPreferences("chand_catalog_updates_v484", 0)
+private var savedIranMarketCatalog = loadSavedCatalog("iran_market", MarketSource.TGJU)
+private var savedIranStockCatalog = loadSavedCatalog("iran_stock", MarketSource.TSETMC)
+private var savedGlobalMarketCatalog = loadSavedCatalog("global_market", MarketSource.TRADINGVIEW)
+""",
+        1
+    )
+
+init_pattern = re.compile(
+    r"""init\s*\{\s*
+    WidgetUpdater\.schedule\(application\)\s*
+    repository\.knownDescriptors\(\)\.forEach\s*\{\s*descriptorCache\[it\.id\]\s*=\s*it\s*\}\s*
+    \}""",
+    re.VERBOSE
+)
+if "savedIranMarketCatalog.forEach { descriptorCache[it.id] = it }" not in v:
+    match = init_pattern.search(v)
+    if not match:
+        raise SystemExit("v4.8.4 updater VM: init block not found")
+    new_init = """init {
+WidgetUpdater.schedule(application)
+repository.knownDescriptors().forEach { descriptorCache[it.id] = it }
+savedIranMarketCatalog.forEach { descriptorCache[it.id] = it }
+savedIranStockCatalog.forEach { descriptorCache[it.id] = it }
+savedGlobalMarketCatalog.forEach { descriptorCache[it.id] = it }
+}"""
+    v = v[:match.start()] + new_init + v[match.end():]
+
+if "val savedCatalogItems = when (source)" not in v:
+    load_pattern = re.compile(
+        r"""val\s+page\s*=\s*when\s*\(source\)\s*\{\s*
+        CatalogSource\.MARKETS\s*->\s*repository\.searchMarkets\(normalizedQuery,\s*catalogPage\)\s*
+        CatalogSource\.STOCKS\s*->\s*repository\.searchStocks\(normalizedQuery,\s*catalogPage\)\s*
+        \}\s*
+        page\.items\.forEach\s*\{\s*descriptorCache\[it\.id\]\s*=\s*it\s*\}\s*
+        val\s+latest\s*=\s*_uiState\.value\s*
+        if\s*\(latest\.catalogSource\s*!=\s*source\s*\|\|\s*latest\.catalogQuery\s*!=\s*normalizedQuery\)\s*return@launch\s*
+        val\s+merged\s*=\s*if\s*\(loadMore\)\s*latest\.catalogItems\s*\+\s*page\.items\s*else\s*page\.items
+        """,
+        re.VERBOSE
+    )
+    match = load_pattern.search(v)
+    if not match:
+        raise SystemExit("v4.8.4 updater VM: loadCatalog block not found")
+    replacement = """val page = when (source) {
+CatalogSource.MARKETS -> repository.searchMarkets(normalizedQuery, catalogPage)
+CatalogSource.STOCKS -> repository.searchStocks(normalizedQuery, catalogPage)
+}
+val savedCatalogItems = when (source) {
+CatalogSource.MARKETS -> (savedIranMarketCatalog + savedGlobalMarketCatalog)
+CatalogSource.STOCKS -> savedIranStockCatalog
+}.filter { it.matchesCatalogQuery(normalizedQuery) }
+val currentItems = (page.items + savedCatalogItems).distinctBy(MarketDescriptor::id)
+currentItems.forEach { descriptorCache[it.id] = it }
+val latest = _uiState.value
+if (latest.catalogSource != source || latest.catalogQuery != normalizedQuery) return@launch
+val merged = if (loadMore) latest.catalogItems + currentItems else currentItems"""
+    v = v[:match.start()] + replacement + v[match.end():]
+
+if "fun updateIranMarketCatalog()" not in v:
+    anchor = "fun setGridMode(enabled: Boolean) = updateSettings { copy(gridMode = enabled) }\n"
+    if anchor not in v:
+        raise SystemExit("v4.8.4 updater VM: setGridMode anchor not found")
+
+    methods = r'''fun updateIranMarketCatalog() {
+runCatalogUpdate(
+key = "iran_market",
+label = "بازار ایران",
+current = { _uiState.value.iranMarketUpdate },
+set = { value -> _uiState.update { it.copy(iranMarketUpdate = value) } },
+saved = { savedIranMarketCatalog },
+save = { items ->
+savedIranMarketCatalog = items
+saveCatalog("iran_market", items)
+},
+fetch = { progress -> repository.refreshIranMarketCatalogStrict(progress) }
+)
+}
+
+fun updateIranStockCatalog() {
+runCatalogUpdate(
+key = "iran_stock",
+label = "بورس ایران",
+current = { _uiState.value.iranStockUpdate },
+set = { value -> _uiState.update { it.copy(iranStockUpdate = value) } },
+saved = { savedIranStockCatalog },
+save = { items ->
+savedIranStockCatalog = items
+saveCatalog("iran_stock", items)
+},
+fetch = { progress -> repository.refreshIranStockCatalogStrict(progress) }
+)
+}
+
+fun updateGlobalMarketCatalog() {
+runCatalogUpdate(
+key = "global_market",
+label = "بازار جهانی (Investing)",
+current = { _uiState.value.globalMarketUpdate },
+set = { value -> _uiState.update { it.copy(globalMarketUpdate = value) } },
+saved = { savedGlobalMarketCatalog },
+save = { items ->
+savedGlobalMarketCatalog = items
+saveCatalog("global_market", items)
+},
+fetch = { progress -> repository.refreshGlobalInvestingCatalogStrict(progress) }
+)
+}
+
+private fun runCatalogUpdate(
+key: String,
+label: String,
+current: () -> CatalogUpdateUiState,
+set: (CatalogUpdateUiState) -> Unit,
+saved: () -> List<MarketDescriptor>,
+save: (List<MarketDescriptor>) -> Unit,
+fetch: suspend ((Int) -> Unit) -> List<MarketDescriptor>
+) {
+if (current().running) return
+
+set(
+CatalogUpdateUiState(
+running = true,
+progress = 0,
+success = null,
+message = "در حال اتصال به منبع " + label + "…"
+)
+)
+
+viewModelScope.launch {
+try {
+val oldItems = saved()
+val oldIds = oldItems.map(MarketDescriptor::id).toSet()
+val hadSync = catalogCachePrefs.getBoolean(key + "_synced", false)
+
+val fresh = fetch { providerProgress ->
+val progress = providerProgress.coerceIn(0, 100)
+set(
+current().copy(
+running = true,
+progress = progress,
+success = null,
+message = when {
+progress < 25 -> "در حال دریافت فهرست " + label + "…"
+progress < 75 -> "در حال بررسی نمادهای جدید…"
+progress < 100 -> "در حال ثبت فهرست تازه…"
+else -> "در حال نهایی‌سازی…"
+}
+)
+)
+}.distinctBy(MarketDescriptor::id)
+
+if (fresh.isEmpty()) {
+throw IllegalStateException("فهرست دریافتی خالی بود")
+}
+
+fresh.forEach { descriptorCache[it.id] = it }
+save(fresh)
+catalogCachePrefs.edit().putBoolean(key + "_synced", true).apply()
+
+val newCount = if (hadSync) {
+fresh.count { it.id !in oldIds }
+} else 0
+
+val message = if (!hadSync) {
+"همگام‌سازی اولیه با موفقیت انجام شد؛ " + fresh.size + " نماد در دسترس قرار گرفت."
+} else if (newCount > 0) {
+"آپدیت موفق بود؛ " + newCount + " نماد جدید به لیست انتخابی اضافه شد."
+} else {
+"آپدیت موفق بود؛ نماد جدیدی پیدا نشد و فهرست شما به‌روز است."
+}
+
+set(
+CatalogUpdateUiState(
+running = false,
+progress = 100,
+success = true,
+message = message
+)
+)
+} catch (cancelled: CancellationException) {
+throw cancelled
+} catch (failure: Throwable) {
+set(
+current().copy(
+running = false,
+success = false,
+message = catalogUpdateFailureMessage(label, failure)
+)
+)
+}
+}
+}
+
+private fun MarketDescriptor.matchesCatalogQuery(query: String): Boolean {
+if (query.isBlank()) return true
+return name.contains(query, ignoreCase = true) ||
+code.contains(query, ignoreCase = true) ||
+symbol.contains(query, ignoreCase = true) ||
+category.contains(query, ignoreCase = true)
+}
+
+private fun saveCatalog(key: String, items: List<MarketDescriptor>) {
+val array = JSONArray()
+items.forEach { descriptor ->
+array.put(
+JSONObject()
+.put("id", descriptor.id)
+.put("sourceKey", descriptor.sourceKey)
+.put("name", descriptor.name)
+.put("code", descriptor.code)
+.put("symbol", descriptor.symbol)
+.put("source", descriptor.source.name)
+.put("category", descriptor.category)
+.put("unit", descriptor.unit)
+.put("valueScale", descriptor.valueScale)
+)
+}
+catalogCachePrefs.edit().putString(key + "_json", array.toString()).apply()
+}
+
+private fun loadSavedCatalog(
+key: String,
+defaultSource: MarketSource
+): List<MarketDescriptor> {
+val raw = catalogCachePrefs.getString(key + "_json", null) ?: return emptyList()
+return runCatching {
+val array = JSONArray(raw)
+buildList {
+for (index in 0 until array.length()) {
+val row = array.optJSONObject(index) ?: continue
+val id = row.optString("id").trim()
+val sourceKey = row.optString("sourceKey").trim()
+if (id.isBlank() || sourceKey.isBlank()) continue
+val source = runCatching {
+MarketSource.valueOf(row.optString("source"))
+}.getOrDefault(defaultSource)
+add(
+MarketDescriptor(
+id = id,
+sourceKey = sourceKey,
+name = row.optString("name"),
+code = row.optString("code"),
+symbol = row.optString("symbol"),
+source = source,
+category = row.optString("category"),
+unit = row.optString("unit"),
+valueScale = row.optDouble("valueScale", 1.0)
+)
+)
+}
+}
+}.getOrDefault(emptyList())
+}
+
+private fun catalogUpdateFailureMessage(label: String, failure: Throwable): String {
+val raw = failure.message.orEmpty()
+val kind = failure::class.java.simpleName
+return when {
+kind.contains("UnknownHost", ignoreCase = true) ||
+raw.contains("Unable to resolve host", ignoreCase = true) ||
+raw.contains("UnknownHost", ignoreCase = true) ->
+"دلیل: اینترنت یا DNS به منبع " + label + " دسترسی ندارد. راه‌حل: اینترنت/VPN را بررسی کنید، DNS را تغییر دهید و دوباره «بررسی آپدیت» را بزنید."
+
+kind.contains("Timeout", ignoreCase = true) ||
+raw.contains("timeout", ignoreCase = true) ||
+raw.contains("timed out", ignoreCase = true) ->
+"دلیل: پاسخ " + label + " در زمان مقرر نرسید. راه‌حل: اتصال پایدارتر را امتحان کنید و چند لحظه بعد دوباره آپدیت بگیرید."
+
+raw.contains("403") || raw.contains("429") ->
+"دلیل: منبع " + label + " فعلاً درخواست را محدود کرده است. راه‌حل: چند دقیقه صبر کنید، شبکه را عوض کنید و دوباره تلاش کنید."
+
+raw.contains("TSETMC", ignoreCase = true) ->
+"دلیل: TSETMC فهرست معتبر بورس را برنگرداند. راه‌حل: اتصال اینترنت را بررسی کنید و بعد از باز شدن سرویس بورس دوباره آپدیت بگیرید."
+
+raw.contains("TGJU", ignoreCase = true) ->
+"دلیل: TGJU فهرست معتبر بازار ایران را برنگرداند. راه‌حل: اتصال اینترنت/VPN را بررسی کنید و دوباره تلاش کنید."
+
+raw.contains("Investing", ignoreCase = true) ->
+"دلیل: Investing پاسخ معتبر برای بازار جهانی نداد. راه‌حل: اینترنت/VPN را بررسی کنید و چند لحظه بعد دوباره تلاش کنید."
+
+else ->
+"دلیل: " + raw.ifBlank { "ارتباط معتبر با منبع برقرار نشد" }.take(150) +
+". راه‌حل: اینترنت را بررسی کنید و دوباره آپدیت بگیرید."
+}
+}
+
+'''
+    v = v.replace(anchor, methods + anchor, 1)
+
+vm_file.write_text(v)
