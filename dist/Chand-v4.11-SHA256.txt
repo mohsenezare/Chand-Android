@@ -1,1 +1,1 @@
-7e92cf02a698ef966bf0d643114dda255a518f038ed4bd5bf2cab76b143900e7  out/Chand-v4.11-last-price-symbol-size-debug.apk
+824fa1f5c8cd39f71950ff79794238b7c24a2c0582abdb645c59f90c0ca4b127  out/Chand-v4.11-last-price-symbol-size-debug.apk
