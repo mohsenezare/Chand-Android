@@ -1325,240 +1325,331 @@ g = re.sub(
 )
 gradle.write_text(g)
 
+# ---------------- v4.8.1 TSETMC real-trade live fix ----------------
+# Keep the exact v4.8 UI/features; only harden Iranian-market live semantics
+# and quote refresh. A TSETMC card becomes LIVE only after an actual trade today.
 
-# ---------------- v4.9 adaptive symbol-name typography ----------------
-# Make the displayed market/symbol name scale smoothly by character count:
-# short names get more visual weight, long names shrink only as much as needed.
+tse_client = root / "data/TsetmcLiveClient.kt"
+tse_client.write_text(r'''package ir.personal.chand.data
+
+import okhttp3.OkHttpClient
+import okhttp3.Request
+import org.json.JSONArray
+import org.json.JSONObject
+import java.io.Closeable
+import java.time.LocalDate
+import java.time.LocalDateTime
+import java.time.LocalTime
+import java.time.ZoneId
+import java.util.concurrent.Executors
+import java.util.concurrent.ScheduledFuture
+import java.util.concurrent.TimeUnit
+
+/**
+ * Near-real-time TSETMC watcher for the selected Iranian symbols.
+ *
+ * The previous delta path could leave a symbol stuck on a stale snapshot when
+ * the app started before that symbol's first trade. This implementation polls
+ * the current MarketWatch snapshot about once per second and only emits LIVE
+ * ticks when TSETMC reports a real trade time + actual trade activity.
+ *
+ * A small per-symbol ClosingPriceInfo fallback is used only for selected symbols
+ * that are absent from the bulk MarketWatch response.
+ */
+class TsetmcLiveClient(
+    private val httpClient: OkHttpClient,
+    insCodes: List<String>,
+    private val onState: (LiveConnectionState) -> Unit,
+    private val onTicks: (List<StreamTick>) -> Unit
+) : Closeable {
+    private val watched = insCodes
+        .map(String::trim)
+        .filter { it.isNotBlank() && it.all(Char::isDigit) }
+        .distinct()
+
+    private val watchedSet = watched.toHashSet()
+    private val scheduler = Executors.newSingleThreadScheduledExecutor { task ->
+        Thread(task, "chand-tsetmc-live").apply { isDaemon = true }
+    }
+
+    @Volatile private var closed = false
+    private var future: ScheduledFuture<*>? = null
+    private var fallbackCursor = 0
+    private var consecutiveFailures = 0
+
+    fun start() {
+        if (closed || watched.isEmpty()) return
+        onState(LiveConnectionState.CONNECTING)
+        future = scheduler.scheduleWithFixedDelay(
+            { pollSafely() },
+            0L,
+            POLL_INTERVAL_MS,
+            TimeUnit.MILLISECONDS
+        )
+    }
+
+    private fun pollSafely() {
+        if (closed) return
+        try {
+            val root = JSONObject(get(MARKET_WATCH_URL))
+            val rows = root.optJSONArray("marketwatch")
+                ?: root.optJSONArray("marketWatch")
+                ?: root.optJSONArray("data")
+                ?: JSONArray()
+
+            val seen = HashSet<String>()
+            val ticks = ArrayList<StreamTick>()
+            for (index in 0 until rows.length()) {
+                val row = rows.optJSONObject(index) ?: continue
+                val code = stringAny(
+                    row,
+                    "insCode", "inscode", "instrumentId", "instrumentID"
+                ).trim()
+                if (code !in watchedSet) continue
+                seen += code
+                parseMarketWatchTick(code, row)?.let(ticks::add)
+            }
+
+            // Some instruments can be absent from the bulk market-watch payload.
+            // Check only a small rotating subset of missing selected symbols so
+            // we stay fresh without hammering TSETMC.
+            val missing = watched.filterNot(seen::contains)
+            if (missing.isNotEmpty()) {
+                repeat(minOf(MAX_FALLBACKS_PER_POLL, missing.size)) {
+                    val code = missing[fallbackCursor.mod(missing.size)]
+                    fallbackCursor = (fallbackCursor + 1).mod(missing.size)
+                    fetchSingleTick(code)?.let(ticks::add)
+                }
+            }
+
+            if (ticks.isNotEmpty()) onTicks(ticks)
+            consecutiveFailures = 0
+            // TSETMC is a fast polling feed, not a websocket.
+            onState(LiveConnectionState.POLLING)
+        } catch (_: Throwable) {
+            consecutiveFailures++
+            onState(
+                if (consecutiveFailures >= OFFLINE_AFTER_FAILURES) {
+                    LiveConnectionState.OFFLINE
+                } else {
+                    LiveConnectionState.POLLING
+                }
+            )
+        }
+    }
+
+    private fun parseMarketWatchTick(code: String, row: JSONObject): StreamTick? {
+        val hEven = longAny(row, "hEven", "heven", "lastHEven", "lastHeven") ?: 0L
+        val last = numberAny(row, "pDrCotVal", "pl", "last", "lastPrice") ?: 0.0
+        val trades = numberAny(row, "zTotTran", "tno", "tradeCount") ?: 0.0
+        val volume = numberAny(row, "qTotTran5J", "tvol", "tradeVolume") ?: 0.0
+
+        // No time / no actual transaction => keep the last valid price in the UI,
+        // but do not promote this card to LIVE.
+        if (hEven <= 0L || last <= 0.0 || (trades <= 0.0 && volume <= 0.0)) return null
+
+        val yesterday = numberAny(row, "priceYesterday", "py", "yClose", "yesterdayPrice")
+        val change = yesterday?.takeIf { it > 0.0 }?.let { last - it }
+            ?: numberAny(row, "priceChange", "change")
+            ?: 0.0
+        val percent = yesterday?.takeIf { it > 0.0 }?.let { change / it * 100.0 }
+            ?: numberAny(row, "priceChangePercent", "changePercent", "percent")
+            ?: 0.0
+
+        return StreamTick(
+            sourceKey = code,
+            itemId = "tsetmc:$code",
+            price = last,
+            high = numberAny(row, "priceMax", "pmax", "high")?.takeIf { it > 0.0 } ?: last,
+            low = numberAny(row, "priceMin", "pmin", "low")?.takeIf { it > 0.0 } ?: last,
+            open = numberAny(row, "priceFirst", "pf", "open")?.takeIf { it > 0.0 } ?: last,
+            change = change,
+            changePercent = percent,
+            direction = when {
+                change > 0.0 -> "high"
+                change < 0.0 -> "low"
+                else -> "same"
+            },
+            sourceUpdatedAtMillis = tehranMillisToday(hEven) ?: System.currentTimeMillis(),
+            bid = null,
+            ask = null
+        )
+    }
+
+    private fun fetchSingleTick(code: String): StreamTick? {
+        return runCatching {
+            val root = JSONObject(get("$CLOSING_INFO_URL/$code"))
+            val row = root.optJSONObject("closingPriceInfo")
+                ?: root.optJSONObject("data")
+                ?: return@runCatching null
+
+            val dEven = longAny(row, "dEven", "deven", "date") ?: 0L
+            val hEven = longAny(row, "hEven", "heven", "lastHEven", "lastHeven") ?: 0L
+            val last = numberAny(row, "pDrCotVal", "last", "lastPrice") ?: 0.0
+            val trades = numberAny(row, "zTotTran", "tradeCount") ?: 0.0
+            val volume = numberAny(row, "qTotTran5J", "tradeVolume") ?: 0.0
+
+            val sourceTime = tehranMillis(dEven, hEven) ?: return@runCatching null
+            val today = LocalDate.now(TEHRAN_ZONE)
+            val sourceDate = java.time.Instant.ofEpochMilli(sourceTime)
+                .atZone(TEHRAN_ZONE)
+                .toLocalDate()
+
+            if (sourceDate != today ||
+                hEven <= 0L ||
+                last <= 0.0 ||
+                (trades <= 0.0 && volume <= 0.0)
+            ) return@runCatching null
+
+            val yesterday = numberAny(row, "priceYesterday", "py", "yClose", "yesterdayPrice")
+            val change = yesterday?.takeIf { it > 0.0 }?.let { last - it }
+                ?: numberAny(row, "priceChange", "change")
+                ?: 0.0
+            val percent = yesterday?.takeIf { it > 0.0 }?.let { change / it * 100.0 }
+                ?: numberAny(row, "priceChangePercent", "changePercent", "percent")
+                ?: 0.0
+
+            StreamTick(
+                sourceKey = code,
+                itemId = "tsetmc:$code",
+                price = last,
+                high = numberAny(row, "priceMax", "pmax", "high")?.takeIf { it > 0.0 } ?: last,
+                low = numberAny(row, "priceMin", "pmin", "low")?.takeIf { it > 0.0 } ?: last,
+                open = numberAny(row, "priceFirst", "pf", "open")?.takeIf { it > 0.0 } ?: last,
+                change = change,
+                changePercent = percent,
+                direction = when {
+                    change > 0.0 -> "high"
+                    change < 0.0 -> "low"
+                    else -> "same"
+                },
+                sourceUpdatedAtMillis = sourceTime,
+                bid = null,
+                ask = null
+            )
+        }.getOrNull()
+    }
+
+    private fun tehranMillisToday(hEven: Long): Long? =
+        tehranMillis(
+            LocalDate.now(TEHRAN_ZONE).let {
+                it.year.toLong() * 10_000L + it.monthValue * 100L + it.dayOfMonth
+            },
+            hEven
+        )
+
+    private fun tehranMillis(dEven: Long, hEven: Long): Long? {
+        if (dEven <= 0L || hEven <= 0L) return null
+        val year = (dEven / 10_000L).toInt()
+        val month = ((dEven / 100L) % 100L).toInt()
+        val day = (dEven % 100L).toInt()
+        val hour = (hEven / 10_000L).toInt()
+        val minute = ((hEven / 100L) % 100L).toInt()
+        val second = (hEven % 100L).toInt()
+        return runCatching {
+            LocalDateTime.of(
+                LocalDate.of(year, month, day),
+                LocalTime.of(hour, minute, second)
+            ).atZone(TEHRAN_ZONE).toInstant().toEpochMilli()
+        }.getOrNull()
+    }
+
+    private fun get(url: String): String {
+        val request = Request.Builder()
+            .url(url)
+            .header("Accept", "application/json,text/plain,*/*")
+            .header("Cache-Control", "no-cache")
+            .header("User-Agent", HTTP_USER_AGENT)
+            .build()
+        return httpClient.newCall(request).execute().use { response ->
+            if (!response.isSuccessful) error("TSETMC HTTP " + response.code)
+            response.body?.string().orEmpty().also {
+                if (it.isBlank() || it.contains("General Error Detected", ignoreCase = true)) {
+                    error("Empty/blocked TSETMC response")
+                }
+            }
+        }
+    }
+
+    override fun close() {
+        closed = true
+        future?.cancel(true)
+        future = null
+        scheduler.shutdownNow()
+    }
+
+    private fun stringAny(value: JSONObject, vararg keys: String): String {
+        for (key in keys) {
+            val raw = value.opt(key)
+            if (raw != null && raw !== JSONObject.NULL) {
+                val text = raw.toString().trim()
+                if (text.isNotBlank()) return text
+            }
+        }
+        return ""
+    }
+
+    private fun numberAny(value: JSONObject, vararg keys: String): Double? {
+        for (key in keys) {
+            val raw = value.opt(key)
+            val number = when (raw) {
+                is Number -> raw.toDouble()
+                null, JSONObject.NULL -> null
+                else -> raw.toString().replace(",", "").trim().toDoubleOrNull()
+            }
+            if (number != null && number.isFinite()) return number
+        }
+        return null
+    }
+
+    private fun longAny(value: JSONObject, vararg keys: String): Long? =
+        numberAny(value, *keys)?.toLong()
+
+    companion object {
+        private val TEHRAN_ZONE = ZoneId.of("Asia/Tehran")
+        private const val POLL_INTERVAL_MS = 900L
+        private const val MAX_FALLBACKS_PER_POLL = 3
+        private const val OFFLINE_AFTER_FAILURES = 4
+        private const val HTTP_USER_AGENT =
+            "Mozilla/5.0 (Linux; Android 14) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/126 Mobile Safari/537.36"
+
+        private const val MARKET_WATCH_URL =
+            "https://cdn.tsetmc.com/api/ClosingPrice/GetMarketWatch?market=0&industrialGroup=&paperTypes%5B0%5D=1&paperTypes%5B1%5D=2&paperTypes%5B2%5D=3&paperTypes%5B3%5D=4&paperTypes%5B4%5D=5&paperTypes%5B5%5D=6&paperTypes%5B6%5D=7&paperTypes%5B7%5D=8&paperTypes%5B8%5D=9&showTraded=false&withBestLimits=false&hEven=0&RefID=0"
+
+        private const val CLOSING_INFO_URL =
+            "https://cdn.tsetmc.com/api/ClosingPrice/GetClosingPriceInfo"
+    }
+}
+''')
+
+# Fix the card-level LIVE badge semantics for Iranian symbols.
 ui = root / "MainActivity.kt"
 u = ui.read_text()
-
-old_name_logic = """            val longName = item.name.length > if (compact) 11 else 16
-            val nameFontSize = when {
-                compact && longName -> 13.sp
-                compact -> 15.sp
-                longName -> 17.sp
-                else -> 20.sp
+old_live = """        ir.personal.chand.data.MarketSource.TSETMC -> age <= 30L * 60L * 1000L"""
+new_live = """        ir.personal.chand.data.MarketSource.TSETMC -> {
+            if (item.origin != DataOrigin.LIVE) {
+                false
+            } else {
+                val sourceDate = java.time.Instant.ofEpochMilli(item.sourceUpdatedAtMillis)
+                    .atZone(TehranZone)
+                    .toLocalDate()
+                val today = java.time.ZonedDateTime.now(TehranZone).toLocalDate()
+                sourceDate == today && age <= 30L * 60L * 1000L
             }
-"""
-new_name_logic = """            val nameLength = item.name.trim().length
-            val nameFontSize = when {
-                compact && nameLength <= 5 -> 19.sp
-                compact && nameLength <= 8 -> 18.sp
-                compact && nameLength <= 12 -> 16.sp
-                compact && nameLength <= 17 -> 14.sp
-                compact -> 13.sp
-                nameLength <= 5 -> 25.sp
-                nameLength <= 9 -> 23.sp
-                nameLength <= 14 -> 21.sp
-                nameLength <= 20 -> 18.sp
-                else -> 16.sp
-            }
-            val nameLineHeight = when {
-                compact && nameLength <= 8 -> 21.sp
-                compact && nameLength <= 12 -> 19.sp
-                compact -> 17.sp
-                nameLength <= 9 -> 27.sp
-                nameLength <= 14 -> 24.sp
-                nameLength <= 20 -> 21.sp
-                else -> 19.sp
-            }
-            val codeLength = item.code.trim().length
-            val codeFontSize = when {
-                compact && codeLength <= 5 -> 13.sp
-                compact && codeLength <= 8 -> 12.sp
-                compact -> 11.sp
-                codeLength <= 5 -> 15.sp
-                codeLength <= 8 -> 14.sp
-                else -> 13.sp
-            }
-"""
-if old_name_logic not in u:
-    raise SystemExit("v4.9 adaptive name anchor not found")
-u = u.replace(old_name_logic, new_name_logic, 1)
-
-u = u.replace(
-    "lineHeight = if (compact) 16.sp else 20.sp,",
-    "lineHeight = nameLineHeight,",
-    1
-)
-u = u.replace(
-    "fontSize = if (compact) 11.sp else 13.sp,",
-    "fontSize = codeFontSize,",
-    1
-)
-
+        }"""
+if old_live not in u:
+    raise SystemExit("v4.8.1 TSETMC LIVE UI anchor not found")
+u = u.replace(old_live, new_live, 1)
 ui.write_text(u)
 
+# Build as a patch release over v4.8; use a higher versionCode so it can update
+# installations of later test builds without uninstalling.
 gradle = Path("source/app/build.gradle.kts")
 g = gradle.read_text()
-m = re.search(r"versionCode\s*=\s*(\d+)", g)
-if m:
-    next_code = max(int(m.group(1)) + 1, 21)
-    g = re.sub(r"versionCode\s*=\s*\d+", f"versionCode = {next_code}", g, count=1)
+g = re.sub(r"versionCode\s*=\s*\d+", "versionCode = 24", g, count=1)
 g = re.sub(
     r'versionName\s*=\s*"[^"]+"',
-    'versionName = "4.9-adaptive-symbol-font"',
-    g,
-    count=1
-)
-gradle.write_text(g)
-
-
-# ---------------- v4.10 smaller secondary symbol code ----------------
-# Make the second-line symbol/code label (USD, EUR, USDT, BRENT, XAU/USD, ...)
-# smaller so it stays visually secondary to the main market name.
-ui = root / "MainActivity.kt"
-u = ui.read_text()
-
-old_code_logic = """            val codeLength = item.code.trim().length
-            val codeFontSize = when {
-                compact && codeLength <= 5 -> 13.sp
-                compact && codeLength <= 8 -> 12.sp
-                compact -> 11.sp
-                codeLength <= 5 -> 15.sp
-                codeLength <= 8 -> 14.sp
-                else -> 13.sp
-            }
-"""
-new_code_logic = """            val codeLength = item.code.trim().length
-            val codeFontSize = when {
-                compact && codeLength <= 5 -> 11.sp
-                compact && codeLength <= 8 -> 10.sp
-                compact -> 9.sp
-                codeLength <= 5 -> 13.sp
-                codeLength <= 8 -> 12.sp
-                else -> 11.sp
-            }
-"""
-if old_code_logic not in u:
-    raise SystemExit("v4.10 codeFontSize anchor not found")
-u = u.replace(old_code_logic, new_code_logic, 1)
-
-# Slightly tighter line height for the secondary code label.
-u = u.replace(
-    "fontSize = codeFontSize,\n                            fontWeight = FontWeight.SemiBold,",
-    "fontSize = codeFontSize,\n                            lineHeight = codeFontSize * 1.05f,\n                            fontWeight = FontWeight.SemiBold,",
-    1
-)
-
-ui.write_text(u)
-
-gradle = Path("source/app/build.gradle.kts")
-g = gradle.read_text()
-m = re.search(r"versionCode\s*=\s*(\d+)", g)
-if m:
-    next_code = max(int(m.group(1)) + 1, 22)
-    g = re.sub(r"versionCode\s*=\s*\d+", f"versionCode = {next_code}", g, count=1)
-g = re.sub(
-    r'versionName\s*=\s*"[^"]+"',
-    'versionName = "4.10-smaller-symbol-code"',
-    g,
-    count=1
-)
-gradle.write_text(g)
-
-
-# ---------------- v4.11 restore symbol + TSETMC last-valid price ----------------
-# Restore the secondary market/ticker code size to the pre-v4.10 values.
-ui = root / "MainActivity.kt"
-u = ui.read_text()
-
-small_code_logic = """            val codeLength = item.code.trim().length
-            val codeFontSize = when {
-                compact && codeLength <= 5 -> 11.sp
-                compact && codeLength <= 8 -> 10.sp
-                compact -> 9.sp
-                codeLength <= 5 -> 13.sp
-                codeLength <= 8 -> 12.sp
-                else -> 11.sp
-            }
-"""
-restored_code_logic = """            val codeLength = item.code.trim().length
-            val codeFontSize = when {
-                compact && codeLength <= 5 -> 13.sp
-                compact && codeLength <= 8 -> 12.sp
-                compact -> 11.sp
-                codeLength <= 5 -> 15.sp
-                codeLength <= 8 -> 14.sp
-                else -> 13.sp
-            }
-"""
-if small_code_logic not in u:
-    raise SystemExit("v4.11 codeFontSize anchor not found")
-u = u.replace(small_code_logic, restored_code_logic, 1)
-u = u.replace(
-    "fontSize = codeFontSize,\n                            lineHeight = codeFontSize * 1.05f,\n                            fontWeight = FontWeight.SemiBold,",
-    "fontSize = codeFontSize,\n                            fontWeight = FontWeight.SemiBold,",
-    1
-)
-ui.write_text(u)
-
-# Strengthen TSETMC last-valid-price behavior for symbols that have no trade today.
-repo = root / "data/MarketRepository.kt"
-r = repo.read_text()
-
-old_daily_fallback = """                        else -> requestResult {
-                            TsetmcProtocol.parseDailyList(
-                                httpGet("$TSETMC_API/api/ClosingPrice/GetClosingPriceDailyList/$insCode/15", 10_000)
-                            ).firstOrNull { it.hasRealTrade }
-                        }.getOrNull()
-"""
-new_daily_fallback = """                        else -> requestResult {
-                            TsetmcProtocol.parseDailyList(
-                                httpGet("$TSETMC_API/api/ClosingPrice/GetClosingPriceDailyList/$insCode/365", 12_000)
-                            )
-                                .filter { it.hasRealTrade }
-                                .maxByOrNull { q ->
-                                    TsetmcProtocol.toSourceTimestamp(q.dEven, q.hEven, fallbackToToday = false)
-                                }
-                        }.getOrNull()
-"""
-if old_daily_fallback not in r:
-    raise SystemExit("v4.11 TSETMC daily fallback anchor not found")
-r = r.replace(old_daily_fallback, new_daily_fallback, 1)
-
-old_q_price = """                    val q = quote ?: error("No real TSETMC last trade")
-                    val price = q.last.takeIf { it > 0.0 } ?: error("Invalid TSETMC last trade")
-                    val timestamp = TsetmcProtocol.toSourceTimestamp(q.dEven, q.hEven, fallbackToToday = current?.hasRealTrade == true)
-                        .takeIf { it > 0L }
-                        ?: previous?.sourceUpdatedAtMillis?.takeIf { it > 0L }
-                        ?: receivedAtMillis
-"""
-new_q_price = """                    val q = quote
-                        ?: current?.takeIf { it.last > 0.0 || it.closing > 0.0 || it.yesterday > 0.0 }
-                        ?: error("No valid TSETMC last price")
-                    val price = when {
-                        q.last > 0.0 -> q.last
-                        q.closing > 0.0 -> q.closing
-                        q.yesterday > 0.0 -> q.yesterday
-                        else -> previous?.price?.takeIf { it > 0.0 } ?: error("Invalid TSETMC last price")
-                    }
-                    val timestamp = if (q.hasRealTrade) {
-                        TsetmcProtocol.toSourceTimestamp(q.dEven, q.hEven, fallbackToToday = current?.hasRealTrade == true)
-                            .takeIf { it > 0L }
-                            ?: previous?.sourceUpdatedAtMillis?.takeIf { it > 0L }
-                            ?: receivedAtMillis
-                    } else {
-                        previous?.sourceUpdatedAtMillis?.takeIf { it > 0L }
-                            ?: TsetmcProtocol.toSourceTimestamp(q.dEven, 0, fallbackToToday = false)
-                                .takeIf { it > 0L }
-                            ?: 0L
-                    }
-"""
-if old_q_price not in r:
-    raise SystemExit("v4.11 TSETMC quote/price anchor not found")
-r = r.replace(old_q_price, new_q_price, 1)
-repo.write_text(r)
-
-gradle = Path("source/app/build.gradle.kts")
-g = gradle.read_text()
-m = re.search(r"versionCode\s*=\s*(\d+)", g)
-if m:
-    next_code = max(int(m.group(1)) + 1, 23)
-    g = re.sub(r"versionCode\s*=\s*\d+", f"versionCode = {next_code}", g, count=1)
-g = re.sub(
-    r'versionName\s*=\s*"[^"]+"',
-    'versionName = "4.11-last-price-symbol-size"',
+    'versionName = "4.8.1-tsetmc-live-fix"',
     g,
     count=1
 )
