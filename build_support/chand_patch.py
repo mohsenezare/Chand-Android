@@ -2138,3 +2138,14 @@ g = re.sub(
     count=1
 )
 gradle.write_text(g)
+
+
+# ---------------- ensure clip import for final polish ----------------
+ui = root / "MainActivity.kt"
+zz = ui.read_text()
+if "import androidx.compose.ui.draw.clip\n" not in zz:
+    anchor = "import androidx.compose.ui.Modifier\n"
+    if anchor not in zz:
+        raise SystemExit("clip import anchor not found")
+    zz = zz.replace(anchor, anchor + "import androidx.compose.ui.draw.clip\n", 1)
+ui.write_text(zz)
