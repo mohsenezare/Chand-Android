@@ -4940,3 +4940,136 @@ gradle = Path("source/app/build.gradle.kts")
 g = gradle.read_text()
 g = re.sub(r"versionCode\s*=\s*\d+", "versionCode = 45", g, count=1)
 gradle.write_text(g)
+
+
+# --- LOCKED FIX: native Material3 PullToRefreshBox ---
+# ONLY fixes pull-to-refresh gesture reliability. Everything else remains locked.
+ui_file = root / "MainActivity.kt"
+u = ui_file.read_text()
+
+pull_import = "import androidx.compose.material3.pulltorefresh.PullToRefreshBox\n"
+if pull_import not in u:
+    import_anchor = "import androidx.compose.material3.TextButton\n"
+    if import_anchor not in u:
+        raise SystemExit("native pull refresh: Material3 import anchor not found")
+    u = u.replace(import_anchor, import_anchor + pull_import, 1)
+
+# Old manual nested-scroll implementation is removed completely.
+for unused_import in [
+    "import androidx.compose.ui.input.nestedscroll.NestedScrollConnection\n",
+    "import androidx.compose.ui.input.nestedscroll.NestedScrollSource\n",
+    "import androidx.compose.ui.input.nestedscroll.nestedScroll\n",
+    "import androidx.compose.ui.unit.Velocity\n",
+]:
+    u = u.replace(unused_import, "")
+
+grid_start = u.find("@Composable\nprivate fun MarketGrid(")
+card_start = u.find("\n@Composable\nprivate fun MarketCard", grid_start)
+if grid_start < 0 or card_start < 0:
+    raise SystemExit("native pull refresh: MarketGrid boundaries not found")
+
+new_grid = """@OptIn(ExperimentalMaterial3Api::class)
+@Composable
+private fun MarketGrid(
+    items: List<MarketItem>,
+    gridMode: Boolean,
+    onItemClick: (MarketItem) -> Unit,
+    onMove: (String, Int) -> Unit,
+    isRefreshing: Boolean,
+    onPullRefresh: () -> Unit
+) {
+    val gridState = rememberLazyGridState()
+
+    PullToRefreshBox(
+        isRefreshing = isRefreshing,
+        onRefresh = onPullRefresh,
+        modifier = Modifier.fillMaxSize()
+    ) {
+        LazyVerticalGrid(
+            columns = GridCells.Fixed(if (gridMode) 2 else 1),
+            state = gridState,
+            contentPadding = PaddingValues(start = 14.dp, end = 14.dp, top = 4.dp, bottom = 10.dp),
+            horizontalArrangement = Arrangement.spacedBy(10.dp),
+            verticalArrangement = Arrangement.spacedBy(10.dp),
+            modifier = Modifier
+                .fillMaxSize()
+                .background(
+                    if (MaterialTheme.colorScheme.background.luminance() > 0.5f)
+                        Color(0xFFE7E6E3)
+                    else
+                        Color.Transparent
+                )
+        ) {
+            items(items, key = MarketItem::id) { item ->
+                var dragOffset by remember(item.id) { mutableStateOf(Offset.Zero) }
+                MarketCard(
+                    item = item,
+                    gridMode = gridMode,
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .then(
+                            if (gridMode) Modifier.aspectRatio(1.04f)
+                            else Modifier.heightIn(min = 220.dp)
+                        )
+                        .pointerInput(item.id, gridMode) {
+                            detectDragGesturesAfterLongPress(
+                                onDragStart = { dragOffset = Offset.Zero },
+                                onDragCancel = { dragOffset = Offset.Zero },
+                                onDragEnd = { dragOffset = Offset.Zero },
+                                onDrag = { change, amount ->
+                                    change.consume()
+                                    dragOffset += amount
+
+                                    val horizontalThreshold = size.width * 0.32f
+                                    val verticalThreshold = size.height * 0.32f
+
+                                    if (gridMode) {
+                                        when {
+                                            dragOffset.x > horizontalThreshold -> {
+                                                onMove(item.id, 1)
+                                                dragOffset = Offset.Zero
+                                            }
+                                            dragOffset.x < -horizontalThreshold -> {
+                                                onMove(item.id, -1)
+                                                dragOffset = Offset.Zero
+                                            }
+                                            dragOffset.y > verticalThreshold -> {
+                                                onMove(item.id, 2)
+                                                dragOffset = Offset.Zero
+                                            }
+                                            dragOffset.y < -verticalThreshold -> {
+                                                onMove(item.id, -2)
+                                                dragOffset = Offset.Zero
+                                            }
+                                        }
+                                    } else {
+                                        when {
+                                            dragOffset.y > verticalThreshold -> {
+                                                onMove(item.id, 1)
+                                                dragOffset = Offset.Zero
+                                            }
+                                            dragOffset.y < -verticalThreshold -> {
+                                                onMove(item.id, -1)
+                                                dragOffset = Offset.Zero
+                                            }
+                                        }
+                                    }
+                                }
+                            )
+                        },
+                    onClick = { onItemClick(item) }
+                )
+            }
+        }
+    }
+}
+"""
+
+u = u[:grid_start] + new_grid + u[card_start:]
+ui_file.write_text(u)
+
+# Installation-only bump so the fixed APK installs over the previous one.
+gradle = Path("source/app/build.gradle.kts")
+g = gradle.read_text()
+g = re.sub(r"versionCode\s*=\s*\d+", "versionCode = 46", g, count=1)
+gradle.write_text(g)
