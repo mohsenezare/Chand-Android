@@ -2672,3 +2672,273 @@ else ->
     v = v.replace(anchor, methods + anchor, 1)
 
 vm_file.write_text(v)
+
+
+# --- LOCKED v4.8.4 SETTINGS UPDATE UI ---
+ui_file = root / "MainActivity.kt"
+u = ui_file.read_text()
+
+if "import androidx.compose.foundation.rememberScrollState\n" not in u:
+    anchor = "import androidx.compose.foundation.clickable\n"
+    if anchor not in u:
+        raise SystemExit("v4.8.4 updater UI: clickable import anchor not found")
+    u = u.replace(
+        anchor,
+        anchor + "import androidx.compose.foundation.rememberScrollState\nimport androidx.compose.foundation.verticalScroll\n",
+        1
+    )
+
+call_start = u.find("SettingsDialog(", u.find("if (settingsOpen)"))
+if call_start < 0:
+    raise SystemExit("v4.8.4 updater UI: SettingsDialog call not found")
+call_end = u.find("\n        )", call_start)
+if call_end < 0:
+    call_end = u.find("\n    )", call_start)
+if call_end < 0:
+    raise SystemExit("v4.8.4 updater UI: SettingsDialog call end not found")
+
+call = u[call_start:call_end]
+if "onUpdateIranMarket" not in call:
+    match = re.search(r"\n\s*onManage\s*=", call)
+    if not match:
+        raise SystemExit("v4.8.4 updater UI: onManage named arg not found")
+    addition = """
+            onUpdateIranMarket = viewModel::updateIranMarketCatalog,
+            onUpdateIranStock = viewModel::updateIranStockCatalog,
+            onUpdateGlobalMarket = viewModel::updateGlobalMarketCatalog,"""
+    call = call[:match.start()] + addition + call[match.start():]
+    u = u[:call_start] + call + u[call_end:]
+
+settings_start = u.find("@Composable\nprivate fun SettingsDialog(")
+manage_start = u.find("@Composable\nprivate fun ManageItemsDialog(", settings_start)
+if settings_start < 0 or manage_start <= settings_start:
+    raise SystemExit("v4.8.4 updater UI: SettingsDialog range not found")
+
+settings_new = r'''@Composable
+private fun SettingsDialog(
+state: ChandUiState,
+onDismiss: () -> Unit,
+onTheme: (ThemeMode) -> Unit,
+onGrid: (Boolean) -> Unit,
+onUpdateIranMarket: () -> Unit,
+onUpdateIranStock: () -> Unit,
+onUpdateGlobalMarket: () -> Unit,
+onManage: () -> Unit
+) {
+val isLight = MaterialTheme.colorScheme.background.luminance() > 0.5f
+AlertDialog(
+onDismissRequest = onDismiss,
+containerColor = if (isLight) Color(0xFFFDFDFC) else ChandCard,
+title = {
+Text(
+"تنظیمات",
+color = if (isLight) Color(0xFF111111) else Color.White
+)
+},
+text = {
+Column(
+modifier = Modifier
+.heightIn(max = 620.dp)
+.verticalScroll(rememberScrollState())
+) {
+Row(
+modifier = Modifier.fillMaxWidth(),
+verticalAlignment = Alignment.CenterVertically
+) {
+Text("چیدمان دو ستونه", Modifier.weight(1f))
+Switch(state.settings.gridMode, onGrid)
+}
+HorizontalDivider(
+color = if (isLight) Color(0xFFD9D9DD) else Color(0xFF343438)
+)
+Text(
+"ظاهر",
+color = if (isLight) Color(0xFF77777C) else ChandMuted,
+fontSize = 12.sp,
+modifier = Modifier.padding(top = 12.dp)
+)
+ThemeMode.entries.forEach { mode ->
+Row(
+modifier = Modifier
+.fillMaxWidth()
+.clickable { onTheme(mode) }
+.padding(vertical = 9.dp),
+verticalAlignment = Alignment.CenterVertically
+) {
+Text(
+when (mode) {
+ThemeMode.DARK -> "تیره (مشابه Chand)"
+ThemeMode.SYSTEM -> "مطابق دستگاه"
+ThemeMode.LIGHT -> "روشن"
+},
+Modifier.weight(1f)
+)
+if (state.settings.themeMode == mode) Icon(Icons.Default.Check, null)
+}
+}
+
+HorizontalDivider(
+color = if (isLight) Color(0xFFD9D9DD) else Color(0xFF343438),
+modifier = Modifier.padding(top = 8.dp)
+)
+Text(
+"به‌روزرسانی فهرست نمادها",
+fontWeight = FontWeight.Bold,
+fontSize = 14.sp,
+modifier = Modifier.padding(top = 14.dp, bottom = 4.dp)
+)
+Text(
+"هر منبع جداگانه بررسی می‌شود و فقط فهرست نمادهای قابل انتخاب تازه می‌شود.",
+color = if (isLight) Color(0xFF77777C) else ChandMuted,
+fontSize = 11.sp,
+lineHeight = 15.sp,
+modifier = Modifier.padding(bottom = 10.dp)
+)
+
+CatalogUpdateCard(
+title = "بازار ایران",
+provider = "TGJU",
+state = state.iranMarketUpdate,
+onUpdate = onUpdateIranMarket
+)
+Spacer(Modifier.height(8.dp))
+CatalogUpdateCard(
+title = "بورس ایران",
+provider = "TSETMC",
+state = state.iranStockUpdate,
+onUpdate = onUpdateIranStock
+)
+Spacer(Modifier.height(8.dp))
+CatalogUpdateCard(
+title = "بازار جهانی",
+provider = "Investing",
+state = state.globalMarketUpdate,
+onUpdate = onUpdateGlobalMarket
+)
+
+Spacer(Modifier.height(8.dp))
+TextButton(onClick = onManage, modifier = Modifier.fillMaxWidth()) {
+Text("مدیریت قیمت‌ها")
+}
+}
+},
+confirmButton = { TextButton(onClick = onDismiss) { Text("تمام") } }
+)
+}
+
+@Composable
+private fun CatalogUpdateCard(
+title: String,
+provider: String,
+state: CatalogUpdateUiState,
+onUpdate: () -> Unit
+) {
+val isLight = MaterialTheme.colorScheme.background.luminance() > 0.5f
+val accent = when {
+state.success == false -> Color(0xFFE34E57)
+state.running || state.success == true -> Color(0xFF36B979)
+else -> if (isLight) Color(0xFF5C5C62) else ChandMuted
+}
+val surfaceColor = when {
+state.success == false -> if (isLight) Color(0xFFFFEFF0) else Color(0xFF32191B)
+state.running || state.success == true -> if (isLight) Color(0xFFEDFAF3) else Color(0xFF10291D)
+else -> if (isLight) Color.White else Color(0xFF242428)
+}
+val progress = state.progress.coerceIn(0, 100)
+
+Surface(
+modifier = Modifier.fillMaxWidth(),
+shape = RoundedCornerShape(16.dp),
+color = surfaceColor,
+border = androidx.compose.foundation.BorderStroke(
+1.dp,
+accent.copy(alpha = if (state.success == null && !state.running) .26f else .72f)
+),
+shadowElevation = if (isLight) 2.dp else 0.dp
+) {
+Column(Modifier.padding(12.dp)) {
+Row(
+modifier = Modifier.fillMaxWidth(),
+verticalAlignment = Alignment.CenterVertically
+) {
+Column(Modifier.weight(1f)) {
+Text(
+title,
+fontWeight = FontWeight.Bold,
+fontSize = 14.sp,
+color = if (isLight) Color(0xFF111111) else Color.White
+)
+Text(
+provider,
+fontSize = 11.sp,
+color = if (isLight) Color(0xFF85858A) else ChandMuted
+)
+}
+Text(
+progress.toString() + "%",
+color = accent,
+fontWeight = FontWeight.Bold,
+fontSize = 14.sp
+)
+}
+
+Spacer(Modifier.height(9.dp))
+Surface(
+modifier = Modifier
+.fillMaxWidth()
+.height(9.dp),
+shape = CircleShape,
+color = if (isLight) Color(0xFFE1E1E4) else Color(0xFF3B3B40)
+) {
+Box(Modifier.fillMaxSize()) {
+if (progress > 0) {
+Surface(
+modifier = Modifier
+.fillMaxWidth(progress / 100f)
+.height(9.dp),
+shape = CircleShape,
+color = accent
+) {}
+}
+}
+}
+
+state.message?.let { message ->
+Spacer(Modifier.height(8.dp))
+Text(
+message,
+fontSize = 11.sp,
+lineHeight = 16.sp,
+color = when {
+state.success == false -> if (isLight) Color(0xFFB4232D) else Color(0xFFFFA0A6)
+isLight -> Color(0xFF4F4F54)
+else -> Color(0xFFD6D6DA)
+}
+)
+}
+
+TextButton(
+onClick = onUpdate,
+enabled = !state.running,
+modifier = Modifier.fillMaxWidth()
+) {
+Text(
+if (state.running) "در حال دریافت…" else "بررسی آپدیت",
+color = if (state.running) {
+if (isLight) Color(0xFF99999E) else ChandMuted
+} else accent,
+fontWeight = FontWeight.Bold
+)
+}
+}
+}
+
+'''
+u = u[:settings_start] + settings_new + u[manage_start:]
+ui_file.write_text(u)
+
+# Installation-only versionCode bump; v4.8.4 behavior remains the baseline.
+gradle = Path("source/app/build.gradle.kts")
+g = gradle.read_text()
+g = re.sub(r"versionCode\s*=\s*\d+", "versionCode = 40", g, count=1)
+gradle.write_text(g)
