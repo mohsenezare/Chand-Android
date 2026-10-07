@@ -4709,3 +4709,234 @@ gradle = Path("source/app/build.gradle.kts")
 g = gradle.read_text()
 g = re.sub(r"versionCode\s*=\s*\d+", "versionCode = 44", g, count=1)
 gradle.write_text(g)
+
+
+# --- LOCKED visible pull refresh indicator + remove bottom refresh control ---
+# Scope is intentionally limited to:
+# - make pull refresh visibly obvious for at least a short duration,
+# - make each completed pull gesture ready for the next refresh,
+# - remove the unused bottom circular refresh control.
+# Everything else stays untouched.
+
+ui_file = root / "MainActivity.kt"
+u = ui_file.read_text()
+
+# Remove the now-unused Refresh icon import.
+u = u.replace("import androidx.compose.material.icons.filled.Refresh\n", "")
+
+# Pass refresh state into MarketGrid so the pull detector can ignore extra movement
+# while a refresh is currently running.
+old_call = """                        onItemClick = { viewModel.showChart(it.id) },
+                        onMove = viewModel::moveVisibleItem,
+                        onPullRefresh = viewModel::pullToRefresh
+"""
+new_call = """                        onItemClick = { viewModel.showChart(it.id) },
+                        onMove = viewModel::moveVisibleItem,
+                        isRefreshing = state.pullRefreshing,
+                        onPullRefresh = viewModel::pullToRefresh
+"""
+if old_call in u:
+    u = u.replace(old_call, new_call, 1)
+elif "isRefreshing = state.pullRefreshing" not in u:
+    raise SystemExit("visible refresh: MarketGrid call anchor not found")
+
+old_sig = """    onItemClick: (MarketItem) -> Unit,
+    onMove: (String, Int) -> Unit,
+    onPullRefresh: () -> Unit
+) {"""
+new_sig = """    onItemClick: (MarketItem) -> Unit,
+    onMove: (String, Int) -> Unit,
+    isRefreshing: Boolean,
+    onPullRefresh: () -> Unit
+) {"""
+if old_sig in u:
+    u = u.replace(old_sig, new_sig, 1)
+elif "isRefreshing: Boolean" not in u:
+    raise SystemExit("visible refresh: MarketGrid signature anchor not found")
+
+# Make the nested-scroll trigger one-shot per pull and explicitly reset at gesture end.
+old_condition = """                    if (!gridState.canScrollBackward && available.y > 0f) {
+                        if (!fired) {"""
+new_condition = """                    if (!isRefreshing && !gridState.canScrollBackward && available.y > 0f) {
+                        if (!fired) {"""
+if old_condition in u:
+    u = u.replace(old_condition, new_condition, 1)
+
+pre_fling_anchor = """            override suspend fun onPostFling(
+                consumed: Velocity,
+                available: Velocity
+            ): Velocity {
+                pulled = 0f
+                fired = false
+                return Velocity.Zero
+            }
+"""
+pre_fling_repl = """            override suspend fun onPreFling(available: Velocity): Velocity {
+                pulled = 0f
+                fired = false
+                return Velocity.Zero
+            }
+
+            override suspend fun onPostFling(
+                consumed: Velocity,
+                available: Velocity
+            ): Velocity {
+                pulled = 0f
+                fired = false
+                return Velocity.Zero
+            }
+"""
+if pre_fling_anchor in u and "override suspend fun onPreFling" not in u:
+    u = u.replace(pre_fling_anchor, pre_fling_repl, 1)
+
+# Replace the tiny spinner with a highly visible pill.
+old_indicator = """                if (state.pullRefreshing) {
+                    CircularProgressIndicator(
+                        color = ChandMuted,
+                        strokeWidth = 2.dp,
+                        modifier = Modifier
+                            .align(Alignment.TopCenter)
+                            .padding(top = 8.dp)
+                            .size(22.dp)
+                    )
+                }
+"""
+new_indicator = """                if (state.pullRefreshing) {
+                    val refreshLightMode = MaterialTheme.colorScheme.background.luminance() > 0.5f
+                    Surface(
+                        color = if (refreshLightMode) Color(0xFFFDFDFC) else Color(0xFF252527),
+                        contentColor = if (refreshLightMode) Color(0xFF111113) else Color.White,
+                        shape = RoundedCornerShape(999.dp),
+                        shadowElevation = 6.dp,
+                        modifier = Modifier
+                            .align(Alignment.TopCenter)
+                            .padding(top = 10.dp)
+                    ) {
+                        Row(
+                            modifier = Modifier.padding(horizontal = 14.dp, vertical = 9.dp),
+                            verticalAlignment = Alignment.CenterVertically,
+                            horizontalArrangement = Arrangement.spacedBy(8.dp)
+                        ) {
+                            CircularProgressIndicator(
+                                color = if (refreshLightMode) Color(0xFF5E5E63) else Color(0xFFD0D0D4),
+                                strokeWidth = 2.dp,
+                                modifier = Modifier.size(17.dp)
+                            )
+                            Text(
+                                text = "در حال بروزرسانی…",
+                                fontSize = 12.sp,
+                                fontWeight = FontWeight.SemiBold,
+                                maxLines = 1
+                            )
+                        }
+                    }
+                }
+"""
+if old_indicator in u:
+    u = u.replace(old_indicator, new_indicator, 1)
+elif 'text = "در حال بروزرسانی…"' not in u:
+    raise SystemExit("visible refresh: old indicator block not found")
+
+# Remove the bottom refresh control only.
+old_control_call = """            ControlBar(
+                gridMode = state.settings.gridMode,
+                onAdd = {
+                    viewModel.loadCatalog(CatalogSource.MARKETS)
+                    manageOpen = true
+                },
+                onRefresh = viewModel::refresh,
+                onToggleLayout = { viewModel.setGridMode(!state.settings.gridMode) },
+                onSettings = { settingsOpen = true }
+            )
+"""
+new_control_call = """            ControlBar(
+                gridMode = state.settings.gridMode,
+                onAdd = {
+                    viewModel.loadCatalog(CatalogSource.MARKETS)
+                    manageOpen = true
+                },
+                onToggleLayout = { viewModel.setGridMode(!state.settings.gridMode) },
+                onSettings = { settingsOpen = true }
+            )
+"""
+if old_control_call in u:
+    u = u.replace(old_control_call, new_control_call, 1)
+elif "onRefresh = viewModel::refresh" in u:
+    raise SystemExit("visible refresh: ControlBar call anchor changed unexpectedly")
+
+old_control_sig = """private fun ControlBar(
+    gridMode: Boolean,
+    onAdd: () -> Unit,
+    onRefresh: () -> Unit,
+    onToggleLayout: () -> Unit,
+    onSettings: () -> Unit
+) {"""
+new_control_sig = """private fun ControlBar(
+    gridMode: Boolean,
+    onAdd: () -> Unit,
+    onToggleLayout: () -> Unit,
+    onSettings: () -> Unit
+) {"""
+if old_control_sig in u:
+    u = u.replace(old_control_sig, new_control_sig, 1)
+
+u = u.replace(
+    '        SmallControl(Icons.Default.Refresh, "تازه‌سازی", onRefresh)\n',
+    '',
+    1
+)
+
+ui_file.write_text(u)
+
+# Keep the visible refresh indicator on-screen long enough to be unmistakable.
+vm_file = root / "MainViewModel.kt"
+v = vm_file.read_text()
+old_pull = """    fun pullToRefresh() {
+        if (pullRefreshJob?.isActive == true) return
+        _uiState.update { it.copy(pullRefreshing = true) }
+        pullRefreshJob = viewModelScope.launch {
+            try {
+                refreshOnce(showInitialLoading = false)
+            } catch (cancelled: CancellationException) {
+                throw cancelled
+            } catch (_: Exception) {
+                // Existing snapshot stays visible; only the pull indicator stops.
+            } finally {
+                _uiState.update { it.copy(pullRefreshing = false) }
+            }
+        }
+    }
+"""
+new_pull = """    fun pullToRefresh() {
+        if (pullRefreshJob?.isActive == true) return
+        _uiState.update { it.copy(pullRefreshing = true) }
+        pullRefreshJob = viewModelScope.launch {
+            val startedAt = System.currentTimeMillis()
+            try {
+                refreshOnce(showInitialLoading = false)
+            } catch (cancelled: CancellationException) {
+                throw cancelled
+            } catch (_: Exception) {
+                // Existing valid prices stay visible if the manual refresh fails.
+            } finally {
+                val elapsed = System.currentTimeMillis() - startedAt
+                val minimumVisibleMs = 900L
+                if (elapsed < minimumVisibleMs) {
+                    delay(minimumVisibleMs - elapsed)
+                }
+                _uiState.update { it.copy(pullRefreshing = false) }
+            }
+        }
+    }
+"""
+if old_pull in v:
+    v = v.replace(old_pull, new_pull, 1)
+elif "minimumVisibleMs = 900L" not in v:
+    raise SystemExit("visible refresh: pullToRefresh block not found")
+vm_file.write_text(v)
+
+# Installation-only bump.
+gradle = Path("source/app/build.gradle.kts")
+g = gradle.read_text()
+g = re.sub(r"versionCode\s*=\s*\d+", "versionCode = 45", g, count=1)
+gradle.write_text(g)
