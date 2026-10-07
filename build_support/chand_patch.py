@@ -1764,24 +1764,10 @@ if "maxLines = 1," not in name_tail[:900]:
     card = card[:name_pos] + name_tail
 
 # Replace the card's generic badge only; do not touch detail-page badges.
-badge_patterns = [
-    "MarketBadge(item, Modifier.size(if (compact) 43.dp else 52.dp))",
-    "MarketBadge(item, Modifier.size(if (compact) 45.dp else 54.dp))",
-]
-replaced_badge = False
-for old_badge in badge_patterns:
-    if old_badge in card:
-        card = card.replace(
-            old_badge,
-            "SymbolLogoBadge(item, Modifier.size(if (compact) 43.dp else 52.dp))"
-            if "43.dp" in old_badge
-            else "SymbolLogoBadge(item, Modifier.size(if (compact) 45.dp else 54.dp))",
-            1
-        )
-        replaced_badge = True
-        break
-if not replaced_badge:
+# Match whatever v4.8 card size survived the earlier compatibility patch.
+if "MarketBadge(item," not in card:
     raise SystemExit("v4.8.4 card badge anchor not found")
+card = card.replace("MarketBadge(item,", "SymbolLogoBadge(item,", 1)
 
 u = u[:card_start] + card + u[trend_start:]
 
