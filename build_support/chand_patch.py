@@ -418,14 +418,14 @@ class TradingViewStreamClient(
             .build()
 
         return httpClient.newCall(request).execute().use { response ->
-            if (!response.isSuccessful) error("Investing HTTP \${response.code}")
+            if (!response.isSuccessful) error("Investing HTTP ${response.code}")
             response.body?.string()?.takeIf(String::isNotBlank)
                 ?: error("Empty Investing response")
         }
     }
 
     private fun endpoint(name: String): String =
-        "$BASE/\${UUID.randomUUID().toString().replace("-", "")}/0/0/0/0/$name"
+        "$BASE/${UUID.randomUUID().toString().replace("-", "")}/0/0/0/0/$name"
 
     override fun close() {
         closed = true
@@ -730,7 +730,7 @@ fetch_replacement = r'''    private suspend fun fetchTradingViewItems(
         value.uppercase(Locale.US).filter(Char::isLetterOrDigit)
 
     private fun investingEndpoint(name: String): String =
-        "$INVESTING_TVC_BASE/\${UUID.randomUUID().toString().replace("-", "")}/0/0/0/0/$name"
+        "$INVESTING_TVC_BASE/${UUID.randomUUID().toString().replace("-", "")}/0/0/0/0/$name"
 
     private fun investingSourceTimestamp(value: JSONObject): Long? {
         val raw = sequenceOf(
@@ -764,7 +764,15 @@ http_get_replacement = r'''    private suspend fun httpGetTradingView(url: Strin
             .header("Referer", "https://tvc-invdn-com.investing.com/")
             .header("User-Agent", HTTP_USER_AGENT)
             .build()
-        return awaitHttp(request, timeoutMillis)
+        return withContext(Dispatchers.IO) {
+            val call = httpClient.newCall(request)
+            call.timeout().timeout(timeoutMillis, TimeUnit.MILLISECONDS)
+            call.execute().use { response ->
+                if (!response.isSuccessful) throw IOException("HTTP " + response.code)
+                response.body?.string()?.takeIf(String::isNotBlank)
+                    ?: throw IOException("Empty response")
+            }
+        }
     }
 '''
 if not http_get_pattern.search(r):
