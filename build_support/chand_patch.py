@@ -3884,3 +3884,386 @@ gradle = Path("source/app/build.gradle.kts")
 g = gradle.read_text()
 g = re.sub(r"versionCode\s*=\s*\d+", "versionCode = 41", g, count=1)
 gradle.write_text(g)
+
+
+# --- LOCKED v4.8.4: widget background refresh + light market search + pull refresh ---
+# Only these three scoped changes are applied:
+# 1) Widget-only background network refresh via WorkManager.
+# 2) Manage/search dialog light-mode colors.
+# 3) Pull-to-refresh on the main market grid with an immediate serialized network fetch.
+# All other app behavior remains untouched.
+
+# 1) Widget background refresh.
+widget_file = root / "widget/ChandWidgetProvider.kt"
+w = widget_file.read_text()
+
+widget_import_anchor = "import androidx.work.CoroutineWorker\n"
+widget_imports = """import androidx.work.Constraints
+import androidx.work.CoroutineWorker
+import androidx.work.ExistingPeriodicWorkPolicy
+import androidx.work.ExistingWorkPolicy
+import androidx.work.NetworkType
+import androidx.work.OneTimeWorkRequestBuilder
+import androidx.work.PeriodicWorkRequestBuilder
+"""
+if "import androidx.work.PeriodicWorkRequestBuilder" not in w:
+    if widget_import_anchor not in w:
+        raise SystemExit("locked refresh: widget CoroutineWorker import anchor not found")
+    w = w.replace(widget_import_anchor, widget_imports, 1)
+
+if "import ir.personal.chand.data.MarketRepository\n" not in w:
+    anchor = "import ir.personal.chand.data.MarketItem\n"
+    if anchor not in w:
+        raise SystemExit("locked refresh: MarketItem import anchor not found")
+    w = w.replace(anchor, anchor + "import ir.personal.chand.data.MarketRepository\n", 1)
+
+if "import java.util.concurrent.TimeUnit\n" not in w:
+    anchor = "import org.json.JSONObject\n"
+    if anchor not in w:
+        raise SystemExit("locked refresh: JSONObject import anchor not found")
+    w = w.replace(anchor, anchor + "import java.util.concurrent.TimeUnit\n", 1)
+
+old_worker = """class WidgetRefreshWorker(
+    appContext: Context,
+    params: WorkerParameters
+) : CoroutineWorker(appContext, params) {
+    override suspend fun doWork(): Result {
+        WidgetUpdater.updateAll(applicationContext, WidgetUpdater.readItems(applicationContext))
+        return Result.success()
+    }
+}
+"""
+new_worker = """class WidgetRefreshWorker(
+    appContext: Context,
+    params: WorkerParameters
+) : CoroutineWorker(appContext, params) {
+    override suspend fun doWork(): Result {
+        return try {
+            val repository = MarketRepository(applicationContext)
+            val visibleIds = repository.loadSettings().visibleIds
+            val snapshot = repository.fetch(visibleIds)
+            val valid = snapshot.items.any {
+                it.isAvailable && it.price.isFinite() && it.price > 0.0
+            }
+            if (valid) {
+                WidgetUpdater.updateAll(
+                    applicationContext,
+                    snapshot.items,
+                    forceCacheWrite = true
+                )
+                Result.success()
+            } else {
+                WidgetUpdater.updateAll(
+                    applicationContext,
+                    WidgetUpdater.readItems(applicationContext)
+                )
+                Result.retry()
+            }
+        } catch (_: Throwable) {
+            WidgetUpdater.updateAll(
+                applicationContext,
+                WidgetUpdater.readItems(applicationContext)
+            )
+            Result.retry()
+        }
+    }
+}
+"""
+if old_worker in w:
+    w = w.replace(old_worker, new_worker, 1)
+elif "val repository = MarketRepository(applicationContext)" not in w:
+    raise SystemExit("locked refresh: WidgetRefreshWorker block not found")
+
+old_constants = """    private const val PERIODIC_WORK = "chand-widget-periodic-v2"
+    private const val IMMEDIATE_WORK = "chand-widget-now-v2"
+"""
+new_constants = """    private const val PERIODIC_WORK = "chand-widget-periodic-v3"
+    private const val IMMEDIATE_WORK = "chand-widget-now-v3"
+    private const val OLD_PERIODIC_WORK = "chand-widget-periodic-v2"
+    private const val OLD_IMMEDIATE_WORK = "chand-widget-now-v2"
+"""
+if old_constants in w:
+    w = w.replace(old_constants, new_constants, 1)
+
+old_schedule = """    fun schedule(context: Context) {
+        WorkManager.getInstance(context).cancelUniqueWork(PERIODIC_WORK)
+        WorkManager.getInstance(context).cancelUniqueWork(IMMEDIATE_WORK)
+    }
+
+    fun refreshNow(context: Context) {
+        updateAll(context, readItems(context))
+    }
+"""
+new_schedule = """    fun schedule(context: Context) {
+        val workManager = WorkManager.getInstance(context)
+        workManager.cancelUniqueWork(OLD_PERIODIC_WORK)
+        workManager.cancelUniqueWork(OLD_IMMEDIATE_WORK)
+
+        val constraints = Constraints.Builder()
+            .setRequiredNetworkType(NetworkType.CONNECTED)
+            .build()
+
+        val periodic = PeriodicWorkRequestBuilder<WidgetRefreshWorker>(
+            15,
+            TimeUnit.MINUTES
+        )
+            .setConstraints(constraints)
+            .build()
+
+        workManager.enqueueUniquePeriodicWork(
+            PERIODIC_WORK,
+            ExistingPeriodicWorkPolicy.KEEP,
+            periodic
+        )
+    }
+
+    fun refreshNow(context: Context) {
+        updateAll(context, readItems(context))
+
+        val constraints = Constraints.Builder()
+            .setRequiredNetworkType(NetworkType.CONNECTED)
+            .build()
+
+        val immediate = OneTimeWorkRequestBuilder<WidgetRefreshWorker>()
+            .setConstraints(constraints)
+            .build()
+
+        WorkManager.getInstance(context).enqueueUniqueWork(
+            IMMEDIATE_WORK,
+            ExistingWorkPolicy.REPLACE,
+            immediate
+        )
+    }
+"""
+if old_schedule in w:
+    w = w.replace(old_schedule, new_schedule, 1)
+elif "enqueueUniquePeriodicWork" not in w:
+    raise SystemExit("locked refresh: WidgetUpdater schedule block not found")
+
+widget_file.write_text(w)
+
+# 2) Light mode for the market/search dialog only.
+ui_file = root / "MainActivity.kt"
+u = ui_file.read_text()
+
+if "import androidx.compose.material3.pulltorefresh.PullToRefreshBox\n" not in u:
+    anchor = "import androidx.compose.material3.TextButton\n"
+    if anchor not in u:
+        raise SystemExit("locked refresh: TextButton import anchor not found")
+    u = u.replace(
+        anchor,
+        anchor + "import androidx.compose.material3.pulltorefresh.PullToRefreshBox\n",
+        1
+    )
+
+manage_start = u.find("@Composable\nprivate fun ManageItemsDialog(")
+source_start = u.find("@Composable\nprivate fun SourceButton(", manage_start)
+if manage_start < 0 or source_start <= manage_start:
+    raise SystemExit("locked refresh: ManageItemsDialog range not found")
+manage = u[manage_start:source_start]
+
+if "val manageLightMode = MaterialTheme.colorScheme.background.luminance() > 0.5f" not in manage:
+    body_anchor = ") {\n    var query by remember(state.catalogSource)"
+    if body_anchor not in manage:
+        raise SystemExit("locked refresh: ManageItemsDialog body anchor not found")
+    manage = manage.replace(
+        body_anchor,
+        """) {
+    val manageLightMode = MaterialTheme.colorScheme.background.luminance() > 0.5f
+    var query by remember(state.catalogSource)""",
+        1
+    )
+
+manage = manage.replace(
+    "containerColor = ChandCard,",
+    "containerColor = if (manageLightMode) Color(0xFFFDFDFC) else ChandCard,",
+    1
+)
+manage = manage.replace(
+    "HorizontalDivider(color = Color(0xFF2C2C2E))",
+    """HorizontalDivider(
+                        color = if (manageLightMode) Color(0xFFD9D9DD) else Color(0xFF2C2C2E)
+                    )""",
+    1
+)
+u = u[:manage_start] + manage + u[source_start:]
+
+# Make the source selector itself readable on the light search sheet.
+source_start = u.find("@Composable\nprivate fun SourceButton(")
+source_end = u.find("\n}", source_start)
+if source_start < 0 or source_end <= source_start:
+    raise SystemExit("locked refresh: SourceButton not found")
+# Find the actual end of the small function via the next known function marker if present.
+next_fun = u.find("\n@Composable", source_start + 12)
+if next_fun > source_start:
+    source_end = next_fun
+source = u[source_start:source_end]
+if "val light = MaterialTheme.colorScheme.background.luminance() > 0.5f" not in source:
+    source = source.replace(
+        ") {\nSurface(",
+        """) {
+val light = MaterialTheme.colorScheme.background.luminance() > 0.5f
+Surface(""",
+        1
+    )
+source = source.replace(
+    "color = if (selected) Color.White else Color(0xFF2C2C2E),",
+    """color = when {
+selected && light -> Color(0xFF111113)
+selected -> Color.White
+light -> Color(0xFFF0F0F2)
+else -> Color(0xFF2C2C2E)
+},""",
+    1
+)
+source = source.replace(
+    "contentColor = if (selected) Color.Black else ChandMuted,",
+    """contentColor = when {
+selected && light -> Color.White
+selected -> Color.Black
+light -> Color(0xFF4A4A4F)
+else -> ChandMuted
+},""",
+    1
+)
+u = u[:source_start] + source + u[source_end:]
+
+# 3) Pull-to-refresh with an immediate serialized network refresh.
+vm_file = root / "MainViewModel.kt"
+v = vm_file.read_text()
+
+if "import kotlinx.coroutines.sync.Mutex\n" not in v:
+    anchor = "import kotlinx.coroutines.launch\n"
+    if anchor not in v:
+        raise SystemExit("locked refresh: VM launch import anchor not found")
+    v = v.replace(
+        anchor,
+        anchor + "import kotlinx.coroutines.sync.Mutex\nimport kotlinx.coroutines.sync.withLock\n",
+        1
+    )
+
+if "val pullRefreshing: Boolean = false" not in v:
+    anchor = "val globalMarketUpdate: CatalogUpdateUiState = CatalogUpdateUiState()\n"
+    if anchor not in v:
+        raise SystemExit("locked refresh: globalMarketUpdate state anchor not found")
+    v = v.replace(
+        anchor,
+        "val globalMarketUpdate: CatalogUpdateUiState = CatalogUpdateUiState(),\nval pullRefreshing: Boolean = false\n",
+        1
+    )
+
+if "private val refreshMutex = Mutex()" not in v:
+    anchor = "private var historyJob: Job? = null\n"
+    if anchor not in v:
+        raise SystemExit("locked refresh: historyJob anchor not found")
+    v = v.replace(
+        anchor,
+        anchor + "    private var pullRefreshJob: Job? = null\n    private val refreshMutex = Mutex()\n",
+        1
+    )
+
+if "fun pullToRefresh()" not in v:
+    anchor = """    fun refresh() {
+        refreshSignal.trySend(Unit)
+        if (pollingJob?.isActive != true) startPolling()
+    }
+
+"""
+    if anchor not in v:
+        raise SystemExit("locked refresh: refresh method anchor not found")
+    method = """    fun pullToRefresh() {
+        if (pullRefreshJob?.isActive == true) return
+        _uiState.update { it.copy(pullRefreshing = true) }
+        pullRefreshJob = viewModelScope.launch {
+            try {
+                refreshOnce(showInitialLoading = false)
+            } catch (cancelled: CancellationException) {
+                throw cancelled
+            } catch (_: Exception) {
+                // Existing snapshot stays visible; only the pull indicator stops.
+            } finally {
+                _uiState.update { it.copy(pullRefreshing = false) }
+            }
+        }
+    }
+
+"""
+    v = v.replace(anchor, anchor + method, 1)
+
+if "private suspend fun refreshOnceInternal(" not in v:
+    old_sig = "    private suspend fun refreshOnce(showInitialLoading: Boolean) {\n"
+    if old_sig not in v:
+        raise SystemExit("locked refresh: refreshOnce signature not found")
+    wrapper = """    private suspend fun refreshOnce(showInitialLoading: Boolean) {
+        refreshMutex.withLock {
+            refreshOnceInternal(showInitialLoading)
+        }
+    }
+
+    private suspend fun refreshOnceInternal(showInitialLoading: Boolean) {
+"""
+    v = v.replace(old_sig, wrapper, 1)
+
+vm_file.write_text(v)
+
+# Wire PullToRefreshBox only around the existing main content box.
+u = ui_file.read_text()
+
+main_box = """            Box(modifier = Modifier.weight(1f)) {
+                when {
+                    state.loading && state.snapshot == null -> CircularProgressIndicator(
+                        color = ChandMuted,
+                        strokeWidth = 2.dp,
+                        modifier = Modifier.align(Alignment.Center)
+                    )
+                    state.visibleItems.isEmpty() -> EmptyState {
+                        viewModel.loadCatalog(CatalogSource.MARKETS)
+                        manageOpen = true
+                    }
+                    else -> MarketGrid(
+                        items = state.visibleItems,
+                        gridMode = state.settings.gridMode,
+                        onItemClick = { viewModel.showChart(it.id) },
+                        onMove = viewModel::moveVisibleItem
+                    )
+                }
+            }
+"""
+pull_box = """            PullToRefreshBox(
+                isRefreshing = state.pullRefreshing,
+                onRefresh = viewModel::pullToRefresh,
+                modifier = Modifier.weight(1f)
+            ) {
+                Box(modifier = Modifier.fillMaxSize()) {
+                    when {
+                        state.loading && state.snapshot == null -> CircularProgressIndicator(
+                            color = ChandMuted,
+                            strokeWidth = 2.dp,
+                            modifier = Modifier.align(Alignment.Center)
+                        )
+                        state.visibleItems.isEmpty() -> EmptyState {
+                            viewModel.loadCatalog(CatalogSource.MARKETS)
+                            manageOpen = true
+                        }
+                        else -> MarketGrid(
+                            items = state.visibleItems,
+                            gridMode = state.settings.gridMode,
+                            onItemClick = { viewModel.showChart(it.id) },
+                            onMove = viewModel::moveVisibleItem
+                        )
+                    }
+                }
+            }
+"""
+if main_box in u:
+    u = u.replace(main_box, pull_box, 1)
+elif "onRefresh = viewModel::pullToRefresh" not in u:
+    raise SystemExit("locked refresh: main content Box anchor not found")
+
+ui_file.write_text(u)
+
+# Installation-only versionCode bump.
+gradle = Path("source/app/build.gradle.kts")
+g = gradle.read_text()
+g = re.sub(r"versionCode\s*=\s*\d+", "versionCode = 42", g, count=1)
+gradle.write_text(g)
