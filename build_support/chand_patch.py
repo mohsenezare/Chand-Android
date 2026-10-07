@@ -870,24 +870,37 @@ gradle.write_text(g)
 ui = root / "MainActivity.kt"
 u = ui.read_text()
 
-# Normalize the older workflow-injected LIVE overlay first; this keeps the card clean
-# and gives the new status component full control of LIVE/CLOSED rendering.
-u = re.sub(
-    r'''                    Box\(modifier = Modifier\.size\(if \(compact\) 45\.dp else 54\.dp\)\) \{\n
-                        MarketBadge\(item, Modifier\.fillMaxSize\(\)\)\n
-                        if \(item\.origin == DataOrigin\.LIVE\) \{.*?
-                        \}\n
-                    \}\n'''.replace("\n", ""),
-    "                    MarketBadge(item, Modifier.size(if (compact) 45.dp else 54.dp))\n",
-    u,
-    count=1,
-    flags=re.S,
-)
+card_start = u.find("@Composable\nprivate fun MarketCard(")
+trend_start = u.find("private fun trendColor(", card_start + 1)
+if card_start < 0 or trend_start <= card_start:
+    raise SystemExit("MarketCard function range not found")
 
-badge_anchor = "                    MarketBadge(item, Modifier.size(if (compact) 45.dp else 54.dp))\n                    Spacer(Modifier.weight(1f))\n"
-badge_replacement = """                    Row(
-                        verticalAlignment = Alignment.CenterVertically
-                    ) {
+new_card = """@Composable
+private fun MarketCard(
+    item: MarketItem,
+    gridMode: Boolean,
+    modifier: Modifier = Modifier,
+    onClick: () -> Unit
+) {
+    Card(
+        onClick = onClick,
+        shape = RoundedCornerShape(if (gridMode) 28.dp else 24.dp),
+        colors = CardDefaults.cardColors(containerColor = ChandCard),
+        elevation = CardDefaults.cardElevation(defaultElevation = 0.dp),
+        modifier = modifier
+    ) {
+        BoxWithConstraints(Modifier.fillMaxSize()) {
+            val compact = maxWidth < 185.dp
+            Column(
+                modifier = Modifier
+                    .fillMaxSize()
+                    .padding(if (compact) 14.dp else 18.dp)
+            ) {
+                Row(
+                    modifier = Modifier.fillMaxWidth(),
+                    verticalAlignment = Alignment.Top
+                ) {
+                    Row(verticalAlignment = Alignment.CenterVertically) {
                         MarketBadge(item, Modifier.size(if (compact) 45.dp else 54.dp))
                         Spacer(Modifier.width(if (compact) 4.dp else 6.dp))
                         Text(
@@ -900,22 +913,19 @@ badge_replacement = """                    Row(
                         )
                     }
                     Spacer(Modifier.weight(1f))
-"""
-if badge_anchor not in u:
-    raise SystemExit("MarketBadge/Spacer anchor not found")
-u = u.replace(badge_anchor, badge_replacement, 1)
-
-code_block = """                        Text(
-                            text = item.code,
-                            color = ChandMuted,
-                            fontSize = if (compact) 13.sp else 16.sp,
-                            fontWeight = FontWeight.SemiBold,
+                    Column(horizontalAlignment = Alignment.End) {
+                        Text(
+                            text = item.name,
+                            color = Color.White,
+                            fontSize = if (compact) 16.sp else 20.sp,
+                            lineHeight = if (compact) 19.sp else 23.sp,
+                            fontWeight = FontWeight.Bold,
                             textAlign = TextAlign.End,
                             maxLines = 1,
                             overflow = TextOverflow.Ellipsis
                         )
-"""
-code_replacement = """                        Row(
+                        Spacer(Modifier.height(3.dp))
+                        Row(
                             verticalAlignment = Alignment.CenterVertically,
                             horizontalArrangement = Arrangement.spacedBy(5.dp)
                         ) {
@@ -930,10 +940,37 @@ code_replacement = """                        Row(
                                 overflow = TextOverflow.Ellipsis
                             )
                         }
+                    }
+                }
+
+                Spacer(Modifier.weight(1f))
+
+                Text(
+                    text = MarketFormatting.change(item),
+                    color = trendColor(item),
+                    fontSize = if (compact) 19.sp else 24.sp,
+                    lineHeight = if (compact) 22.sp else 28.sp,
+                    fontWeight = FontWeight.Medium,
+                    maxLines = 1
+                )
+                Spacer(Modifier.height(if (compact) 2.dp else 5.dp))
+                Text(
+                    text = MarketFormatting.price(item),
+                    color = if (item.isAvailable) Color.White else ChandMuted,
+                    fontSize = if (compact) 31.sp else 42.sp,
+                    lineHeight = if (compact) 34.sp else 45.sp,
+                    fontWeight = FontWeight.Black,
+                    letterSpacing = (-1.1).sp,
+                    maxLines = 1,
+                    overflow = TextOverflow.Clip
+                )
+            }
+        }
+    }
+}
+
 """
-if code_block not in u:
-    raise SystemExit("item.code block anchor not found")
-u = u.replace(code_block, code_replacement, 1)
+u = u[:card_start] + new_card + u[trend_start:]
 
 helper_anchor = """private fun trendColor(item: MarketItem): Color = when {
     !item.isAvailable || item.change == 0.0 -> ChandMuted
@@ -991,8 +1028,7 @@ private fun MarketStatusLabel(item: MarketItem, compact: Boolean) {
 
 private fun isMarketLive(item: MarketItem): Boolean {
     if (!item.isAvailable || item.sourceUpdatedAtMillis <= 0L) return false
-    val now = System.currentTimeMillis()
-    val age = (now - item.sourceUpdatedAtMillis).coerceAtLeast(0L)
+    val age = (System.currentTimeMillis() - item.sourceUpdatedAtMillis).coerceAtLeast(0L)
 
     return when (item.source) {
         ir.personal.chand.data.MarketSource.TRADINGVIEW -> age <= 5L * 60L * 1000L
