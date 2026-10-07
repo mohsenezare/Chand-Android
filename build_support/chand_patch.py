@@ -1654,3 +1654,163 @@ g = re.sub(
     count=1
 )
 gradle.write_text(g)
+
+
+# ---------------- v4.8.2 late-session TSETMC fix ----------------
+# Late-opening instruments (notably commodity/gold ETFs such as Ayar) may be
+# present in bulk MarketWatch before their session begins. Treating presence as
+# freshness can both create a false LIVE badge and prevent the single-symbol
+# fallback from taking over. This patch validates bulk timestamps and falls back
+# whenever the bulk row is stale/untraded, not only when the symbol is absent.
+
+tse_client = root / "data/TsetmcLiveClient.kt"
+t = tse_client.read_text()
+
+old_loop = """            val seen = HashSet<String>()
+            val ticks = ArrayList<StreamTick>()
+            for (index in 0 until rows.length()) {
+                val row = rows.optJSONObject(index) ?: continue
+                val code = stringAny(
+                    row,
+                    "insCode", "inscode", "instrumentId", "instrumentID"
+                ).trim()
+                if (code !in watchedSet) continue
+                seen += code
+                parseMarketWatchTick(code, row)?.let(ticks::add)
+            }
+
+            // Some instruments can be absent from the bulk market-watch payload.
+            // Check only a small rotating subset of missing selected symbols so
+            // we stay fresh without hammering TSETMC.
+            val missing = watched.filterNot(seen::contains)
+            if (missing.isNotEmpty()) {
+                repeat(minOf(MAX_FALLBACKS_PER_POLL, missing.size)) {
+                    val code = missing[fallbackCursor.mod(missing.size)]
+                    fallbackCursor = (fallbackCursor + 1).mod(missing.size)
+                    fetchSingleTick(code)?.let(ticks::add)
+                }
+            }
+"""
+new_loop = """            val seen = HashSet<String>()
+            val needsFallback = LinkedHashSet<String>()
+            val ticks = ArrayList<StreamTick>()
+            for (index in 0 until rows.length()) {
+                val row = rows.optJSONObject(index) ?: continue
+                val code = stringAny(
+                    row,
+                    "insCode", "inscode", "instrumentId", "instrumentID"
+                ).trim()
+                if (code !in watchedSet) continue
+                seen += code
+
+                val bulkTick = parseMarketWatchTick(code, row)
+                if (bulkTick != null) {
+                    ticks += bulkTick
+                } else {
+                    // Important for gold/commodity ETFs: they are often already
+                    // listed in MarketWatch before their later trading session opens.
+                    // Being present must not block the direct quote fallback.
+                    needsFallback += code
+                }
+            }
+
+            watched.filterNot(seen::contains).forEach(needsFallback::add)
+
+            if (needsFallback.isNotEmpty()) {
+                val fallbackList = needsFallback.toList()
+                repeat(minOf(MAX_FALLBACKS_PER_POLL, fallbackList.size)) {
+                    val code = fallbackList[fallbackCursor.mod(fallbackList.size)]
+                    fallbackCursor = (fallbackCursor + 1).mod(fallbackList.size)
+                    fetchSingleTick(code)?.let(ticks::add)
+                }
+            }
+"""
+if old_loop not in t:
+    raise SystemExit("v4.8.2 fallback loop anchor not found")
+t = t.replace(old_loop, new_loop, 1)
+
+old_parse_head = """        val hEven = longAny(row, "hEven", "heven", "lastHEven", "lastHeven") ?: 0L
+        val last = numberAny(row, "pDrCotVal", "pl", "last", "lastPrice") ?: 0.0
+        val trades = numberAny(row, "zTotTran", "tno", "tradeCount") ?: 0.0
+        val volume = numberAny(row, "qTotTran5J", "tvol", "tradeVolume") ?: 0.0
+
+        // No time / no actual transaction => keep the last valid price in the UI,
+        // but do not promote this card to LIVE.
+        if (hEven <= 0L || last <= 0.0 || (trades <= 0.0 && volume <= 0.0)) return null
+"""
+new_parse_head = """        val dEven = longAny(row, "dEven", "deven", "date") ?: 0L
+        val hEven = longAny(row, "hEven", "heven", "lastHEven", "lastHeven") ?: 0L
+        val last = numberAny(row, "pDrCotVal", "pl", "last", "lastPrice") ?: 0.0
+        val trades = numberAny(row, "zTotTran", "tno", "tradeCount") ?: 0.0
+        val volume = numberAny(row, "qTotTran5J", "tvol", "tradeVolume") ?: 0.0
+
+        // No actual transaction => keep the previous valid price, but do not mark LIVE.
+        if (hEven <= 0L || last <= 0.0 || (trades <= 0.0 && volume <= 0.0)) return null
+
+        // When the bulk API includes a date, require today's trading date.
+        val today = LocalDate.now(TEHRAN_ZONE)
+        val todayInt = today.year.toLong() * 10_000L + today.monthValue * 100L + today.dayOfMonth
+        if (dEven > 0L && dEven != todayInt) return null
+
+        // Some pre-open rows omit dEven but carry yesterday's hEven. If that time
+        // is still in the future relative to Tehran now, it cannot be today's trade.
+        if (dEven <= 0L) {
+            val tradeSeconds = hhmmssToSeconds(hEven) ?: return null
+            val nowSeconds = LocalTime.now(TEHRAN_ZONE).toSecondOfDay()
+            if (tradeSeconds > nowSeconds + BULK_FUTURE_TOLERANCE_SECONDS) return null
+        }
+"""
+if old_parse_head not in t:
+    raise SystemExit("v4.8.2 bulk timestamp anchor not found")
+t = t.replace(old_parse_head, new_parse_head, 1)
+
+old_source_time = """            sourceUpdatedAtMillis = tehranMillisToday(hEven) ?: System.currentTimeMillis(),"""
+new_source_time = """            sourceUpdatedAtMillis = if (dEven > 0L) {
+                tehranMillis(dEven, hEven) ?: System.currentTimeMillis()
+            } else {
+                tehranMillisToday(hEven) ?: System.currentTimeMillis()
+            },"""
+if old_source_time not in t:
+    raise SystemExit("v4.8.2 source time anchor not found")
+t = t.replace(old_source_time, new_source_time, 1)
+
+helper_anchor = """    private fun tehranMillisToday(hEven: Long): Long? =
+"""
+helper = """    private fun hhmmssToSeconds(hEven: Long): Int? {
+        if (hEven <= 0L) return null
+        val hour = (hEven / 10_000L).toInt()
+        val minute = ((hEven / 100L) % 100L).toInt()
+        val second = (hEven % 100L).toInt()
+        if (hour !in 0..23 || minute !in 0..59 || second !in 0..59) return null
+        return hour * 3600 + minute * 60 + second
+    }
+
+"""
+if helper_anchor not in t:
+    raise SystemExit("v4.8.2 helper anchor not found")
+t = t.replace(helper_anchor, helper + helper_anchor, 1)
+
+const_anchor = """        private const val POLL_INTERVAL_MS = 900L
+        private const val MAX_FALLBACKS_PER_POLL = 3
+"""
+const_repl = """        private const val POLL_INTERVAL_MS = 900L
+        private const val MAX_FALLBACKS_PER_POLL = 4
+        private const val BULK_FUTURE_TOLERANCE_SECONDS = 90
+"""
+if const_anchor not in t:
+    raise SystemExit("v4.8.2 constants anchor not found")
+t = t.replace(const_anchor, const_repl, 1)
+
+tse_client.write_text(t)
+
+# Keep UI/features exactly on the v4.8 line; only bump the patch version.
+gradle = Path("source/app/build.gradle.kts")
+g = gradle.read_text()
+g = re.sub(r"versionCode\s*=\s*\d+", "versionCode = 25", g, count=1)
+g = re.sub(
+    r'versionName\s*=\s*"[^"]+"',
+    'versionName = "4.8.2-gold-fund-live-fix"',
+    g,
+    count=1
+)
+gradle.write_text(g)
