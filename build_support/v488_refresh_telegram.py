@@ -60,15 +60,19 @@ segment = s[start:indicator]
 grid_modifier = "modifier = Modifier.fillMaxSize()\n    ) {"
 grid_pos = segment.index("LazyVerticalGrid(")
 grid_head, grid_body = segment[:grid_pos], segment[grid_pos:]
-original_grid_layer = "modifier = Modifier.fillMaxSize()"
-assert original_grid_layer in grid_body, ("grid modifier missing: " + repr(grid_body[:1400]))
+grid_anchor = """                onRefresh = onPullRefresh
+            )
+    ) {"""
+assert grid_body.count(grid_anchor) == 1, "expected pull-to-refresh grid modifier missing"
 grid_body = grid_body.replace(
-    original_grid_layer,
-    """modifier = Modifier.fillMaxSize().graphicsLayer {
-            // Layer-only read: quote cards are not recomposed per drag frame.
-            translationY = pullState.distanceFraction.coerceIn(0f, 1.25f) * 52.dp.toPx()
-        }""",
-    1
+    grid_anchor,
+    """                onRefresh = onPullRefresh
+            )
+            .graphicsLayer {
+                // Render-layer translation follows the pull without re-composing prices.
+                translationY = pullState.distanceFraction.coerceIn(0f, 1.25f) * 52.dp.toPx()
+            }
+    ) {""", 1
 )
 segment = grid_head + grid_body
 s = s[:start] + segment + s[indicator:]
