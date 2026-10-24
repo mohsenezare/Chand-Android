@@ -1,0 +1,33 @@
+name: TGJU coverage probe
+on:
+  push:
+    branches: ['fix/v4-9-1-tgju-primary-eco-elastic']
+    paths: ['.github/workflows/probe-tgju-coverage.yml']
+  workflow_dispatch:
+jobs:
+  check:
+    runs-on: ubuntu-latest
+    timeout-minutes: 4
+    steps:
+      - name: Check quote keys and matching currency units
+        shell: bash
+        run: |
+          python3 - <<'PY'
+          import urllib.request,json,concurrent.futures,time,urllib.parse
+          keys=['geram18','ons','ons_gold','price_ounce','gold','silver','silver_ounce','oil_brent','oil_wti','brent','wti','crypto-bitcoin','crypto-ethereum','price_dollar_realtime','فولاد','خودرو','gc3','EURUSD','forex_eurusd']
+          targets={'widget '+k:'https://api.tgju.org/v1/widget/tmp?keys='+urllib.parse.quote(k) for k in keys}
+          targets.update({'catalog global GOLD':'https://api.tgju.org/v1/newsearch?module=markets.global&page=1&q=gold','catalog stock فولاد':'https://api.tgju.org/v1/newsearch?module=markets.internal.stocks&page=1&q='+urllib.parse.quote('فولاد')})
+          def probe(entry):
+            key,url=entry
+            try:
+              req=urllib.request.Request(url,headers={'User-Agent':'Mozilla/5.0 Chrome/126 Safari/537.36','Accept':'application/json','Referer':'https://www.tgju.org/'})
+              with urllib.request.urlopen(req,timeout=15) as r: data=json.loads(r.read(200000))
+              if key.startswith('widget'):
+                vals=data.get('response',{}).get('indicators',[])
+                return (key,r.status,[(v.get('name'),v.get('p'),v.get('updated_at'),v.get('unit')) for v in vals[:2]])
+              rows=data.get('list',[])
+              return (key,r.status,[(v.get('grade'),v.get('s3'),v.get('s2'),v.get('title')) for v in rows[:8]])
+            except Exception as e:return (key,type(e).__name__,str(e)[:100])
+          with concurrent.futures.ThreadPoolExecutor(max_workers=10) as pool:
+            for row in pool.map(probe,targets.items()):print('TGJU_COVERAGE',json.dumps(row,ensure_ascii=False))
+          PY
