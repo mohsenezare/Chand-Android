@@ -16,9 +16,16 @@ jobs:
         with:
           distribution: temurin
           java-version: '17'
-      - uses: android-actions/setup-android@v3
       - name: Prepare Android SDK
-        run: sdkmanager "platforms;android-35" "build-tools;35.0.0"
+        shell: bash
+        run: |
+          set -euxo pipefail
+          export ANDROID_SDK_ROOT="${ANDROID_SDK_ROOT:-$ANDROID_HOME}"
+          yes | "$ANDROID_SDK_ROOT/cmdline-tools/latest/bin/sdkmanager" --licenses >/dev/null || true
+          "$ANDROID_SDK_ROOT/cmdline-tools/latest/bin/sdkmanager" "platforms;android-35" "build-tools;35.0.0"
+      - uses: gradle/actions/setup-gradle@v4
+        with:
+          gradle-version: "8.10.2"
       - name: Extract exact uploaded source
         run: |
           mkdir -p uploaded-source
@@ -26,8 +33,7 @@ jobs:
       - name: Build debug APK
         working-directory: uploaded-source
         run: |
-          chmod +x gradlew
-          ./gradlew --no-daemon :app:assembleDebug --stacktrace
+          gradle --no-daemon :app:assembleDebug --stacktrace
       - name: Archive APK
         uses: actions/upload-artifact@v4
         with:
