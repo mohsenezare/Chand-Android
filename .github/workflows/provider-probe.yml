@@ -1,0 +1,37 @@
+name: Chand Provider Catalog Probe
+on:
+  push:
+    branches: ['fix/v4-8-7-locked-catalog-refresh-ui']
+  workflow_dispatch:
+jobs:
+  verify:
+    runs-on: ubuntu-latest
+    timeout-minutes: 4
+    steps:
+      - name: Fetch provider catalog metadata (no user data)
+        shell: bash
+        run: |
+          python3 - <<'PY'
+          import concurrent.futures, urllib.request, time
+          targets={
+            'TGJU API NEWSEARCH internal':'https://api.tgju.org/v1/newsearch?module=markets.internal&page=1',
+            'TGJU website NEWSEARCH internal':'https://www.tgju.org/v1/newsearch?module=markets.internal&page=1',
+            'TGJU API NEWSEARCH global':'https://api.tgju.org/v1/newsearch?module=markets.global&page=1',
+            'TGJU API widget':'https://api.tgju.org/v1/widget/tmp?keys=geram18',
+            'TGJU website market':'https://www.tgju.org/markets/sekeb',
+            'TSETMC CDN watch':'https://cdn.tsetmc.com/api/ClosingPrice/GetMarketWatch?market=0&showTraded=false&withBestLimits=true&hEven=0&RefID=0',
+            'TSETMC old market watch':'https://old.tsetmc.com/tsev2/data/MarketWatchInit.aspx?h=0&r=0',
+            'Investing search':'https://tvc6.investing.com/00000000000000000000000000000000/0/0/0/0/search?query=gold&limit=4&type=&exchange='
+          }
+          def test(entry):
+            name,url=entry;start=time.monotonic()
+            try:
+              req=urllib.request.Request(url,headers={'User-Agent':'Mozilla/5.0 (Linux; Android 14) AppleWebKit/537.36 Chrome/126 Mobile Safari/537.36','Referer':'https://www.tgju.org/','Accept':'application/json,text/plain,*/*','Origin':'https://www.tgju.org'})
+              with urllib.request.urlopen(req,timeout=11) as resp:
+                body=resp.read(5000).decode('utf-8',errors='replace')
+                return name,resp.status,len(body),round(time.monotonic()-start,2),body[:130].replace('\n',' ')
+            except Exception as exc:
+              return name,type(exc).__name__,0,round(time.monotonic()-start,2),str(exc)[:180]
+          with concurrent.futures.ThreadPoolExecutor(max_workers=8) as executor:
+            for result in executor.map(test,targets.items()): print('PROVIDER_PROBE',result)
+          PY
