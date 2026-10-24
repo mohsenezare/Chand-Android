@@ -1,0 +1,1 @@
+24c5acd5335879f2305eebd3f66aff06d6e562c1496df2fccaac3b73e90330a0  out/Chand-v4.8.6-LOCKED-debug.apk
