@@ -111,6 +111,20 @@ jobs:
           grep -q 'versionCode = 46' source/app/build.gradle.kts
           grep -q 'themeMode = ThemeMode.SYSTEM' source/app/src/main/java/ir/personal/chand/data/MarketRepository.kt
 
+      - name: Use fixed instants in market session tests
+        shell: bash
+        run: |
+          python3 - <<'PY'
+          from pathlib import Path
+          p = Path("source/app/src/test/java/ir/personal/chand/data/MarketSessionStatusTest.kt")
+          s = p.read_text()
+          for var in ("saturdayMorning", "saturdayNight", "mondayNoon", "mondayAfter", "thursday", "friday", "now"):
+              s = s.replace(f", {var})))", f", {var}), {var}))")
+          s = s.replace("now + 500_000L)))", "now + 500_000L), now))")
+          assert s.count("MarketSessionStatus.isLive(") == 14
+          p.write_text(s)
+          PY
+
       - name: Inspect locked v4.8.4 patched settings
         shell: bash
         run: |
