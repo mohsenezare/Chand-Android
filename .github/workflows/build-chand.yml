@@ -5,7 +5,7 @@ permissions:
 
 on:
   push:
-    branches: [ main, 'fix/v4-8-4-theme-live-refresh-closed', 'fix/v4-8-5-market-status-system-theme', 'fix/v4-8-6-locked-catalog-live-closed', 'fix/v4-8-7-locked-catalog-refresh-ui' ]
+    branches: [ main, 'fix/v4-8-4-theme-live-refresh-closed', 'fix/v4-8-5-market-status-system-theme', 'fix/v4-8-6-locked-catalog-live-closed', 'fix/v4-8-7-locked-catalog-refresh-ui', 'fix/v4-8-8-repair-add-symbols-tgju-tsetmc' ]
     paths:
       - 'payload/**'
       - 'build_support/**'
@@ -177,6 +177,34 @@ jobs:
           assert 'versionCode = 48' in (fixed/'build.gradle.kts').read_text()
           PY
 
+      - name: Apply v4.8.8 exact four-file missing-symbol fix
+        shell: bash
+        run: |
+          set -euxo pipefail
+          cp -a source/app /tmp/chand-v487-locked-app
+          base64 -d build_support/v488-search-catalog-locked.patch.xz.b64 | xz -d > /tmp/v488.patch
+          patch --directory=source --strip=1 --fuzz=0 < /tmp/v488.patch
+          python3 - <<'PY'
+          from pathlib import Path
+          original, fixed = Path('/tmp/chand-v487-locked-app'), Path('source/app')
+          names={p.relative_to(original) for p in original.rglob('*') if p.is_file()}
+          names|={p.relative_to(fixed) for p in fixed.rglob('*') if p.is_file()}
+          changed={str(p) for p in names if not (original/p).exists() or not (fixed/p).exists() or (original/p).read_bytes()!= (fixed/p).read_bytes()}
+          expected={
+            'build.gradle.kts',
+            'src/main/java/ir/personal/chand/MainActivity.kt',
+            'src/main/java/ir/personal/chand/MainViewModel.kt',
+            'src/main/java/ir/personal/chand/data/MarketRepository.kt'
+          }
+          print('LOCKED_APP_DIFF', sorted(changed))
+          assert changed == expected, f'Unexpected changes: {changed ^ expected}'
+          assert 'versionCode = 49' in (fixed/'build.gradle.kts').read_text()
+          kt = (fixed/'src/main/java/ir/personal/chand/data/MarketRepository.kt').read_text()
+          assert 'private suspend fun fetchTgjuWindow(' in kt
+          assert 'requestResult { fetchTgjuCatalogModule("markets.internal.stocks", normalized, page) }' in kt
+          assert 'if (isStockCollection && rawUnit.isNotBlank() && rawUnit !in allowedStockKinds) return null' not in kt
+          PY
+
       - name: Inspect locked v4.8.4 patched settings
         shell: bash
         run: |
@@ -188,16 +216,16 @@ jobs:
         shell: bash
         run: |
           set -euxo pipefail
-          rm -f Chand-v4.8.7-LOCKED-Source.zip
+          rm -f Chand-v4.8.8-LOCKED-Source.zip
           cd source
-          zip -qr ../Chand-v4.8.7-LOCKED-Source.zip . \
+          zip -qr ../Chand-v4.8.8-LOCKED-Source.zip . \
             -x "*/build/*" ".gradle/*" "local.properties"
 
       - name: Upload exact source artifact
         uses: actions/upload-artifact@v4
         with:
-          name: Chand-v4.8.7-LOCKED-Source
-          path: Chand-v4.8.7-LOCKED-Source.zip
+          name: Chand-v4.8.8-LOCKED-Source
+          path: Chand-v4.8.8-LOCKED-Source.zip
           if-no-files-found: error
 
       - name: Build debug APK
@@ -255,15 +283,15 @@ jobs:
           mkdir -p out
           APK=$(find source/app/build/outputs/apk/debug -name '*.apk' -type f | head -n 1)
           test -n "$APK"
-          cp "$APK" out/Chand-v4.8.7-LOCKED-debug.apk
-          sha256sum out/Chand-v4.8.7-LOCKED-debug.apk | tee out/SHA256.txt
+          cp "$APK" out/Chand-v4.8.8-LOCKED-debug.apk
+          sha256sum out/Chand-v4.8.8-LOCKED-debug.apk | tee out/SHA256.txt
 
       - name: Upload APK artifact
         uses: actions/upload-artifact@v4
         with:
-          name: Chand-v4.8.7-LOCKED-APK
+          name: Chand-v4.8.8-LOCKED-APK
           path: |
-            out/Chand-v4.8.7-LOCKED-debug.apk
+            out/Chand-v4.8.8-LOCKED-debug.apk
             out/SHA256.txt
           if-no-files-found: error
 
@@ -273,13 +301,13 @@ jobs:
         run: |
           set -euxo pipefail
           mkdir -p dist
-          cp out/Chand-v4.8.7-LOCKED-debug.apk dist/Chand-v4.8.7-LOCKED-debug.apk
-          cp out/SHA256.txt dist/Chand-v4.8.7-LOCKED-SHA256.txt
+          cp out/Chand-v4.8.8-LOCKED-debug.apk dist/Chand-v4.8.8-LOCKED-debug.apk
+          cp out/SHA256.txt dist/Chand-v4.8.8-LOCKED-SHA256.txt
           git config user.name "github-actions[bot]"
           git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
-          git add dist/Chand-v4.8.7-LOCKED-debug.apk dist/Chand-v4.8.7-LOCKED-SHA256.txt
+          git add dist/Chand-v4.8.8-LOCKED-debug.apk dist/Chand-v4.8.8-LOCKED-SHA256.txt
           if ! git diff --cached --quiet; then
-            git commit -m "Publish Chand v4.8.7 LOCKED APK [skip ci]"
+            git commit -m "Publish Chand v4.8.8 LOCKED APK [skip ci]"
             git push
           fi
 
