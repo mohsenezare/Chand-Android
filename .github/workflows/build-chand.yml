@@ -5,7 +5,7 @@ permissions:
 
 on:
   push:
-    branches: [ main, 'fix/v4-8-4-theme-live-refresh-closed', 'fix/v4-8-5-market-status-system-theme' ]
+    branches: [ main, 'fix/v4-8-4-theme-live-refresh-closed', 'fix/v4-8-5-market-status-system-theme', 'fix/v4-8-6-locked-catalog-live-closed' ]
     paths:
       - 'payload/**'
       - 'build_support/**'
@@ -125,6 +125,32 @@ jobs:
           p.write_text(s)
           PY
 
+      - name: Apply v4.8.6 scoped catalog and status patch
+        shell: bash
+        run: |
+          set -euxo pipefail
+          cp -a source/app /tmp/chand-base-app
+          base64 -d build_support/v486-locked-catalog-status.patch.xz.b64 | xz -d > /tmp/v486.patch
+          patch --directory=source --strip=1 --fuzz=0 < /tmp/v486.patch
+          python3 - <<'PY'
+          from pathlib import Path
+          base, fixed = Path('/tmp/chand-base-app'), Path('source/app')
+          paths = {p.relative_to(fixed) for p in fixed.rglob('*') if p.is_file()}
+          paths |= {p.relative_to(base) for p in base.rglob('*') if p.is_file()}
+          changes = {str(p) for p in paths if (not (base/p).exists()) or
+                     (not (fixed/p).exists()) or (base/p).read_bytes() != (fixed/p).read_bytes()}
+          expected = {
+             'build.gradle.kts',
+             'src/main/java/ir/personal/chand/MainViewModel.kt',
+             'src/main/java/ir/personal/chand/data/MarketRepository.kt',
+             'src/main/java/ir/personal/chand/data/MarketSessionStatus.kt',
+             'src/test/java/ir/personal/chand/data/MarketSessionStatusTest.kt'
+          }
+          print('LOCKED_CHANGES', sorted(changes))
+          assert changes == expected, f'LOCK CHECK FAILED: {changes.symmetric_difference(expected)}'
+          assert 'versionCode = 47' in (fixed/'build.gradle.kts').read_text()
+          PY
+
       - name: Inspect locked v4.8.4 patched settings
         shell: bash
         run: |
@@ -136,16 +162,16 @@ jobs:
         shell: bash
         run: |
           set -euxo pipefail
-          rm -f Chand-v4.8.5-Market-Status-System-Source.zip
+          rm -f Chand-v4.8.6-LOCKED-Source.zip
           cd source
-          zip -qr ../Chand-v4.8.5-Market-Status-System-Source.zip . \
+          zip -qr ../Chand-v4.8.6-LOCKED-Source.zip . \
             -x "*/build/*" ".gradle/*" "local.properties"
 
       - name: Upload exact source artifact
         uses: actions/upload-artifact@v4
         with:
-          name: Chand-v4.8.5-Source
-          path: Chand-v4.8.5-Market-Status-System-Source.zip
+          name: Chand-v4.8.6-LOCKED-Source
+          path: Chand-v4.8.6-LOCKED-Source.zip
           if-no-files-found: error
 
       - name: Build debug APK
@@ -203,15 +229,15 @@ jobs:
           mkdir -p out
           APK=$(find source/app/build/outputs/apk/debug -name '*.apk' -type f | head -n 1)
           test -n "$APK"
-          cp "$APK" out/Chand-v4.8.5-status-system-debug.apk
-          sha256sum out/Chand-v4.8.5-status-system-debug.apk | tee out/SHA256.txt
+          cp "$APK" out/Chand-v4.8.6-LOCKED-debug.apk
+          sha256sum out/Chand-v4.8.6-LOCKED-debug.apk | tee out/SHA256.txt
 
       - name: Upload APK artifact
         uses: actions/upload-artifact@v4
         with:
-          name: Chand-v4.8.5-Status-System-APK
+          name: Chand-v4.8.6-LOCKED-APK
           path: |
-            out/Chand-v4.8.5-status-system-debug.apk
+            out/Chand-v4.8.6-LOCKED-debug.apk
             out/SHA256.txt
           if-no-files-found: error
 
@@ -221,13 +247,13 @@ jobs:
         run: |
           set -euxo pipefail
           mkdir -p dist
-          cp out/Chand-v4.8.5-status-system-debug.apk dist/Chand-v4.8.5-status-system-debug.apk
-          cp out/SHA256.txt dist/Chand-v4.8.5-SHA256.txt
+          cp out/Chand-v4.8.6-LOCKED-debug.apk dist/Chand-v4.8.6-LOCKED-debug.apk
+          cp out/SHA256.txt dist/Chand-v4.8.6-LOCKED-SHA256.txt
           git config user.name "github-actions[bot]"
           git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
-          git add dist/Chand-v4.8.5-status-system-debug.apk dist/Chand-v4.8.5-SHA256.txt
+          git add dist/Chand-v4.8.6-LOCKED-debug.apk dist/Chand-v4.8.6-LOCKED-SHA256.txt
           if ! git diff --cached --quiet; then
-            git commit -m "Publish Chand v4.8.5 status and system-theme APK [skip ci]"
+            git commit -m "Publish Chand v4.8.6 LOCKED APK [skip ci]"
             git push
           fi
 
