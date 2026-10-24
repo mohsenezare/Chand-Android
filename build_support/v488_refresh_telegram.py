@@ -58,16 +58,19 @@ start = s.index("@Composable\nprivate fun MarketGrid(")
 indicator = s.index("@Composable\nprivate fun IosPullRefreshIndicator(", start)
 segment = s[start:indicator]
 grid_modifier = "modifier = Modifier.fillMaxSize()\n    ) {"
-assert segment.count(grid_modifier) == 1, "expected LazyVerticalGrid modifier not found"
-segment = segment.replace(
-    grid_modifier,
+grid_pos = segment.index("LazyVerticalGrid(")
+grid_head, grid_body = segment[:grid_pos], segment[grid_pos:]
+original_grid_layer = "modifier = Modifier.fillMaxSize()"
+assert original_grid_layer in grid_body, ("grid modifier missing: " + repr(grid_body[:1400]))
+grid_body = grid_body.replace(
+    original_grid_layer,
     """modifier = Modifier.fillMaxSize().graphicsLayer {
-            // State is read in the layer block, not in card composition.
+            // Layer-only read: quote cards are not recomposed per drag frame.
             translationY = pullState.distanceFraction.coerceIn(0f, 1.25f) * 52.dp.toPx()
-        }
-    ) {""",
+        }""",
     1
 )
+segment = grid_head + grid_body
 s = s[:start] + segment + s[indicator:]
 
 # Replace the former frame-by-frame 12-tick spinner and large pill with a much
