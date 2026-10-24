@@ -5,7 +5,7 @@ permissions:
 
 on:
   push:
-    branches: [ main, 'fix/v4-8-4-theme-live-refresh-closed', 'fix/v4-8-5-market-status-system-theme', 'fix/v4-8-6-locked-catalog-live-closed', 'fix/v4-8-7-locked-catalog-refresh-ui', 'fix/v4-8-8-repair-add-symbols-tgju-tsetmc' ]
+    branches: [ main, 'fix/v4-8-4-theme-live-refresh-closed', 'fix/v4-8-5-market-status-system-theme', 'fix/v4-8-6-locked-catalog-live-closed', 'fix/v4-8-7-locked-catalog-refresh-ui', 'fix/v4-8-8-repair-add-symbols-tgju-tsetmc', 'fix/v4-8-9-locked-realtime-pull-telegram' ]
     paths:
       - 'payload/**'
       - 'build_support/**'
@@ -205,6 +205,36 @@ jobs:
           assert 'if (isStockCollection && rawUnit.isNotBlank() && rawUnit !in allowedStockKinds) return null' not in kt
           PY
 
+      - name: Apply v4.8.9 exact four-file realtime and motion patch
+        shell: bash
+        run: |
+          set -euxo pipefail
+          cp -a source/app /tmp/chand-v488-locked-app
+          base64 -d build_support/v489-locked-realtime-pull-telegram.patch.xz.b64 | xz -d > /tmp/v489.patch
+          patch --directory=source --strip=1 --fuzz=0 < /tmp/v489.patch
+          python3 - <<'PY'
+          from pathlib import Path
+          before, after=Path('/tmp/chand-v488-locked-app'), Path('source/app')
+          names={p.relative_to(before) for p in before.rglob('*') if p.is_file()}
+          names|={p.relative_to(after) for p in after.rglob('*') if p.is_file()}
+          changed={str(p) for p in names if not (before/p).exists() or not (after/p).exists() or (before/p).read_bytes() != (after/p).read_bytes()}
+          expected={
+            'build.gradle.kts',
+            'src/main/java/ir/personal/chand/MainActivity.kt',
+            'src/main/java/ir/personal/chand/data/QuoteFreshness.kt',
+            'src/test/java/ir/personal/chand/data/QuoteFreshnessTest.kt'
+          }
+          print('LOCKED_V489_CHANGED_FILES', sorted(changed))
+          assert changed == expected, f'Unexpected source changes: {changed ^ expected}'
+          gradle=(after/'build.gradle.kts').read_text()
+          assert 'versionCode = 50' in gradle
+          ui=(after/'src/main/java/ir/personal/chand/MainActivity.kt').read_text()
+          assert 'TELEGRAM : @ MOHSENEZARE' in ui
+          assert 'PullRefreshHalo' in ui and 'chand-elastic-page-pull' in ui
+          quote=(after/'src/main/java/ir/personal/chand/data/QuoteFreshness.kt').read_text()
+          assert 'current.origin == DataOrigin.LIVE && incoming.origin != DataOrigin.LIVE' in quote
+          PY
+
       - name: Inspect locked v4.8.4 patched settings
         shell: bash
         run: |
@@ -216,16 +246,16 @@ jobs:
         shell: bash
         run: |
           set -euxo pipefail
-          rm -f Chand-v4.8.8-LOCKED-Source.zip
+          rm -f Chand-v4.8.9-LOCKED-Source.zip
           cd source
-          zip -qr ../Chand-v4.8.8-LOCKED-Source.zip . \
+          zip -qr ../Chand-v4.8.9-LOCKED-Source.zip . \
             -x "*/build/*" ".gradle/*" "local.properties"
 
       - name: Upload exact source artifact
         uses: actions/upload-artifact@v4
         with:
-          name: Chand-v4.8.8-LOCKED-Source
-          path: Chand-v4.8.8-LOCKED-Source.zip
+          name: Chand-v4.8.9-LOCKED-Source
+          path: Chand-v4.8.9-LOCKED-Source.zip
           if-no-files-found: error
 
       - name: Build debug APK
@@ -283,15 +313,15 @@ jobs:
           mkdir -p out
           APK=$(find source/app/build/outputs/apk/debug -name '*.apk' -type f | head -n 1)
           test -n "$APK"
-          cp "$APK" out/Chand-v4.8.8-LOCKED-debug.apk
-          sha256sum out/Chand-v4.8.8-LOCKED-debug.apk | tee out/SHA256.txt
+          cp "$APK" out/Chand-v4.8.9-LOCKED-debug.apk
+          sha256sum out/Chand-v4.8.9-LOCKED-debug.apk | tee out/SHA256.txt
 
       - name: Upload APK artifact
         uses: actions/upload-artifact@v4
         with:
-          name: Chand-v4.8.8-LOCKED-APK
+          name: Chand-v4.8.9-LOCKED-APK
           path: |
-            out/Chand-v4.8.8-LOCKED-debug.apk
+            out/Chand-v4.8.9-LOCKED-debug.apk
             out/SHA256.txt
           if-no-files-found: error
 
@@ -301,13 +331,13 @@ jobs:
         run: |
           set -euxo pipefail
           mkdir -p dist
-          cp out/Chand-v4.8.8-LOCKED-debug.apk dist/Chand-v4.8.8-LOCKED-debug.apk
-          cp out/SHA256.txt dist/Chand-v4.8.8-LOCKED-SHA256.txt
+          cp out/Chand-v4.8.9-LOCKED-debug.apk dist/Chand-v4.8.9-LOCKED-debug.apk
+          cp out/SHA256.txt dist/Chand-v4.8.9-LOCKED-SHA256.txt
           git config user.name "github-actions[bot]"
           git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
-          git add dist/Chand-v4.8.8-LOCKED-debug.apk dist/Chand-v4.8.8-LOCKED-SHA256.txt
+          git add dist/Chand-v4.8.9-LOCKED-debug.apk dist/Chand-v4.8.9-LOCKED-SHA256.txt
           if ! git diff --cached --quiet; then
-            git commit -m "Publish Chand v4.8.8 LOCKED APK [skip ci]"
+            git commit -m "Publish Chand v4.8.9 LOCKED APK [skip ci]"
             git push
           fi
 
