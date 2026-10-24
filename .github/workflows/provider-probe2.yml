@@ -1,0 +1,41 @@
+name: Chand Catalog Probe 2
+on:
+  push:
+    branches: ['fix/v4-8-7-locked-catalog-refresh-ui']
+  workflow_dispatch:
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - name: Probe catalog schemas
+        shell: bash
+        run: |
+          python3 - <<'PY'
+          import concurrent.futures, urllib.request, urllib.error, json, uuid, time
+          sid=uuid.uuid4().hex
+          urls={
+            'TGJU_PAGE_1':'https://api.tgju.org/v1/newsearch?module=markets.internal&page=1',
+            'TGJU_PAGE_2':'https://api.tgju.org/v1/newsearch?module=markets.internal&page=2',
+            'TGJU_GLOBAL':'https://api.tgju.org/v1/newsearch?module=markets.global&page=1',
+            'TSETMC_SEARCH':'https://cdn.tsetmc.com/api/Instrument/GetInstrumentSearch/%D9%81%D9%88%D9%84%D8%A7%D8%AF',
+            'TSETMC_MARKET_ALL':'https://cdn.tsetmc.com/api/ClosingPrice/GetMarketWatch?market=0&industrialGroup=&paperTypes%5B0%5D=1&paperTypes%5B1%5D=2&paperTypes%5B2%5D=3&showTraded=false&withBestLimits=true&hEven=0&RefID=0',
+            'INVESTING_REAL_ID':f'https://tvc6.investing.com/{sid}/0/0/0/0/search?query=gold&limit=5&type=&exchange=',
+            'TV_SYMBOL_SEARCH':'https://symbol-search.tradingview.com/symbol_search/?text=GOLD&hl=1&exchange=&lang=en&search_type=undefined&domain=production'
+          }
+          def call(t):
+            name,url=t;started=time.monotonic()
+            req=urllib.request.Request(url,headers={'User-Agent':'Mozilla/5.0 (Linux; Android 14) AppleWebKit/537.36 Chrome/126 Mobile Safari/537.36','Accept':'application/json,text/plain,*/*','Referer':'https://www.tgju.org/','Origin':'https://www.tgju.org'})
+            try:
+              with urllib.request.urlopen(req,timeout=19) as r:
+                body=r.read(60000).decode('utf8','replace'); status=r.status
+              payload=json.loads(body)
+              if isinstance(payload,dict):
+                items=payload.get('list') or payload.get('data') or payload.get('d') or []
+                detail={'keys':list(payload.keys()),'last':payload.get('last'),'count':len(items),'firstKeys':list(items[0].keys()) if isinstance(items,list) and items and isinstance(items[0],dict) else [],'firstType':items[0].get('type') if isinstance(items,list) and items and isinstance(items[0],dict) else None,'firstS3':items[0].get('s3') if isinstance(items,list) and items and isinstance(items[0],dict) else None,'firstGrade':items[0].get('grade') if isinstance(items,list) and items and isinstance(items[0],dict) else None}
+              else: detail={'root':str(type(payload)),'count':len(payload)}
+              return name,status,round(time.monotonic()-started,1),detail
+            except Exception as e: return name,type(e).__name__,round(time.monotonic()-started,1),str(e)[:100]
+          with concurrent.futures.ThreadPoolExecutor(max_workers=7) as x:
+            for v in x.map(call,urls.items()):print('PROBE2',json.dumps(v,ensure_ascii=False))
+          PY
