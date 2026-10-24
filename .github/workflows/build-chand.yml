@@ -5,7 +5,7 @@ permissions:
 
 on:
   push:
-    branches: [ main, 'fix/v4-8-4-theme-live-refresh-closed' ]
+    branches: [ main, 'fix/v4-8-4-theme-live-refresh-closed', 'fix/v4-8-5-market-status-system-theme' ]
     paths:
       - 'payload/**'
       - 'build_support/**'
@@ -102,6 +102,15 @@ jobs:
           patch --directory=source --strip=2 --fuzz=0 < /tmp/chand-fixes.patch
           git status --short || true
 
+      - name: Apply only market status and system startup theme fixes
+        shell: bash
+        run: |
+          set -euxo pipefail
+          base64 -d build_support/v485-market-status-system.patch.xz.b64 | xz -d > /tmp/v485.patch
+          patch --directory=source --strip=1 --fuzz=0 < /tmp/v485.patch
+          grep -q 'versionCode = 46' source/app/build.gradle.kts
+          grep -q 'themeMode = ThemeMode.SYSTEM' source/app/src/main/java/ir/personal/chand/data/MarketRepository.kt
+
       - name: Inspect locked v4.8.4 patched settings
         shell: bash
         run: |
@@ -113,16 +122,16 @@ jobs:
         shell: bash
         run: |
           set -euxo pipefail
-          rm -f Chand-v4.8.4-LOCKED-iOS-Light-Separated-Updates-Source.zip
+          rm -f Chand-v4.8.5-Market-Status-System-Source.zip
           cd source
-          zip -qr ../Chand-v4.8.4-LOCKED-iOS-Light-Separated-Updates-Source.zip . \
+          zip -qr ../Chand-v4.8.5-Market-Status-System-Source.zip . \
             -x "*/build/*" ".gradle/*" "local.properties"
 
       - name: Upload exact source artifact
         uses: actions/upload-artifact@v4
         with:
-          name: Chand-v4.8.4-LOCKED-Source
-          path: Chand-v4.8.4-LOCKED-iOS-Light-Separated-Updates-Source.zip
+          name: Chand-v4.8.5-Source
+          path: Chand-v4.8.5-Market-Status-System-Source.zip
           if-no-files-found: error
 
       - name: Build debug APK
@@ -180,15 +189,15 @@ jobs:
           mkdir -p out
           APK=$(find source/app/build/outputs/apk/debug -name '*.apk' -type f | head -n 1)
           test -n "$APK"
-          cp "$APK" out/Chand-v4.8.4-fixed-debug.apk
-          sha256sum out/Chand-v4.8.4-fixed-debug.apk | tee out/SHA256.txt
+          cp "$APK" out/Chand-v4.8.5-status-system-debug.apk
+          sha256sum out/Chand-v4.8.5-status-system-debug.apk | tee out/SHA256.txt
 
       - name: Upload APK artifact
         uses: actions/upload-artifact@v4
         with:
-          name: Chand-v4.8.4-Fixed-Live-Refresh-APK
+          name: Chand-v4.8.5-Status-System-APK
           path: |
-            out/Chand-v4.8.4-fixed-debug.apk
+            out/Chand-v4.8.5-status-system-debug.apk
             out/SHA256.txt
           if-no-files-found: error
 
@@ -198,13 +207,13 @@ jobs:
         run: |
           set -euxo pipefail
           mkdir -p dist
-          cp out/Chand-v4.8.4-fixed-debug.apk dist/Chand-v4.8.4-fixed-debug.apk
-          cp out/SHA256.txt dist/Chand-v4.8.4-fixed-SHA256.txt
+          cp out/Chand-v4.8.5-status-system-debug.apk dist/Chand-v4.8.5-status-system-debug.apk
+          cp out/SHA256.txt dist/Chand-v4.8.5-SHA256.txt
           git config user.name "github-actions[bot]"
           git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
-          git add dist/Chand-v4.8.4-fixed-debug.apk dist/Chand-v4.8.4-fixed-SHA256.txt
+          git add dist/Chand-v4.8.5-status-system-debug.apk dist/Chand-v4.8.5-SHA256.txt
           if ! git diff --cached --quiet; then
-            git commit -m "Publish Chand v4.11 APK [skip ci]"
+            git commit -m "Publish Chand v4.8.5 status and system-theme APK [skip ci]"
             git push
           fi
 
