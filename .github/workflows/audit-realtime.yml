@@ -1,0 +1,48 @@
+name: Audit Chand live providers (read-only)
+on:
+  workflow_dispatch:
+  push:
+    branches: ['audit/v4-8-8-realtime-three-markets']
+    paths: ['.github/workflows/audit-realtime.yml']
+jobs:
+  audit:
+    runs-on: ubuntu-latest
+    timeout-minutes: 3
+    steps:
+      - name: Check two consecutive quote responses from each source
+        shell: bash
+        run: |
+          python3 - <<'PY'
+          import concurrent.futures, urllib.request, urllib.parse, urllib.error, json, uuid, time, datetime
+          sources={
+           'TGJU_gold_dollar':'https://api.tgju.org/v1/widget/tmp?keys=geram18,price_dollar_realtime',
+           'TSETMC_CDN_marketwatch':'https://cdn.tsetmc.com/api/ClosingPrice/GetMarketWatch?market=0&showTraded=false&withBestLimits=true&hEven=0&RefID=0',
+           'TSETMC_legacy':'https://old.tsetmc.com/tsev2/data/MarketWatchInit.aspx?h=0&r=0'
+          }
+          def once(name,url):
+            start=time.monotonic()
+            try:
+              req=urllib.request.Request(url,headers={'User-Agent':'Mozilla/5.0 (Linux; Android 14) AppleWebKit/537.36 Chrome/126 Mobile Safari/537.36','Accept':'application/json,text/plain,*/*','Referer':'https://www.tgju.org/','Origin':'https://www.tgju.org','Cache-Control':'no-cache'})
+              with urllib.request.urlopen(req,timeout=12) as response:
+                data=response.read(40000); status=response.status
+              obj=json.loads(data) if data.startswith(b'{') else None
+              if name.startswith('TGJU'):
+                items=obj.get('response',{}).get('indicators',[]) if obj else []
+                return {'status':status,'elapsed':round(time.monotonic()-start,1),'quotes':[{k:el.get(k) for k in ('name','p','updated_at')} for el in items[:3]]}
+              elif obj:
+                return {'status':status,'elapsed':round(time.monotonic()-start,1),'jsonKeys':list(obj)[:8],'bytes':len(data)}
+              else:
+                return {'status':status,'elapsed':round(time.monotonic()-start,1),'bytes':len(data),'looksHtml':data[:20].decode('utf-8','replace')}
+            except Exception as e:
+              return {'error':type(e).__name__,'elapsed':round(time.monotonic()-start,1),'message':str(e)[:140]}
+          def execute(batch):
+            pairs=dict(sources)
+            host='https://tvc6.investing.com/'+uuid.uuid4().hex+'/0/0/0/0/quotes'
+            pairs['INVESTING_BTC_XAU']=host+'?symbols='+urllib.parse.quote(':BTC/USD,:XAU/USD')
+            with concurrent.futures.ThreadPoolExecutor(max_workers=4) as p:
+              result=list(p.map(lambda x:(x[0],once(*x)),pairs.items()))
+            for name,x in result:print('PRICE_SOURCE_AUDIT',json.dumps({'round':batch,'source':name,'result':x},ensure_ascii=False))
+          execute(1)
+          time.sleep(13)
+          execute(2)
+          PY
