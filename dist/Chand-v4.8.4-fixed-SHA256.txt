@@ -1,0 +1,1 @@
+2f242503aa5c182363ac1f6dba24646e247a651c80df8ce56bad1ac0ea80df9c  out/Chand-v4.8.4-fixed-debug.apk
