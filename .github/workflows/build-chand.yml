@@ -138,20 +138,26 @@ jobs:
           cd source
           patch -p1 --fuzz=0 < /tmp/v486.patch
 
+      - name: Apply only iOS-style pull animation
+        run: |
+          base64 --decode build_support/v487-pull-animation.patch.xz.b64 | xz -d > /tmp/v487.patch
+          cd source
+          patch -p1 --fuzz=0 < /tmp/v487.patch
+
       - name: Package exact final source
         shell: bash
         run: |
           set -euxo pipefail
-          rm -f Chand-v4.8.6-Refresh-Status-Source.zip
+          rm -f Chand-v4.8.7-Pull-Animation-Source.zip
           cd source
-          zip -qr ../Chand-v4.8.6-Refresh-Status-Source.zip . \
+          zip -qr ../Chand-v4.8.7-Pull-Animation-Source.zip . \
             -x "*/build/*" ".gradle/*" "local.properties"
 
       - name: Upload exact source artifact
         uses: actions/upload-artifact@v4
         with:
-          name: Chand-v4.8.6-Source
-          path: Chand-v4.8.6-Refresh-Status-Source.zip
+          name: Chand-v4.8.7-Source
+          path: Chand-v4.8.7-Pull-Animation-Source.zip
           if-no-files-found: error
 
       - name: Build debug APK
@@ -209,15 +215,15 @@ jobs:
           mkdir -p out
           APK=$(find source/app/build/outputs/apk/debug -name '*.apk' -type f | head -n 1)
           test -n "$APK"
-          cp "$APK" out/Chand-v4.8.6-refresh-status-debug.apk
-          sha256sum out/Chand-v4.8.6-refresh-status-debug.apk | tee out/SHA256.txt
+          cp "$APK" out/Chand-v4.8.7-pull-animation-debug.apk
+          sha256sum out/Chand-v4.8.7-pull-animation-debug.apk | tee out/SHA256.txt
 
       - name: Upload APK artifact
         uses: actions/upload-artifact@v4
         with:
-          name: Chand-v4.8.6-Refresh-Status-APK
+          name: Chand-v4.8.7-Pull-Animation-APK
           path: |
-            out/Chand-v4.8.6-refresh-status-debug.apk
+            out/Chand-v4.8.7-pull-animation-debug.apk
             out/SHA256.txt
           if-no-files-found: error
 
@@ -227,15 +233,15 @@ jobs:
         run: |
           set -euxo pipefail
           mkdir -p dist
-          cp out/Chand-v4.8.6-refresh-status-debug.apk dist/Chand-v4.8.6-refresh-status-debug.apk
-          cp out/SHA256.txt dist/Chand-v4.8.6-SHA256.txt
+          cp out/Chand-v4.8.7-pull-animation-debug.apk dist/Chand-v4.8.7-pull-animation-debug.apk
+          cp out/SHA256.txt dist/Chand-v4.8.7-SHA256.txt
           git config user.name "github-actions[bot]"
           git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
-          cp Chand-v4.8.6-Refresh-Status-Source.zip dist/Chand-v4.8.6-Refresh-Status-Source.zip
-          git add dist/Chand-v4.8.6-Refresh-Status-Source.zip
-          git add dist/Chand-v4.8.6-refresh-status-debug.apk dist/Chand-v4.8.6-SHA256.txt
+          cp Chand-v4.8.7-Pull-Animation-Source.zip dist/Chand-v4.8.7-Pull-Animation-Source.zip
+          git add dist/Chand-v4.8.7-Pull-Animation-Source.zip
+          git add dist/Chand-v4.8.7-pull-animation-debug.apk dist/Chand-v4.8.7-SHA256.txt
           if ! git diff --cached --quiet; then
-            git commit -m "Publish Chand v4.8.6 refresh and status APK [skip ci]"
+            git commit -m "Publish Chand v4.8.7 pull animation APK [skip ci]"
             git push
           fi
 
