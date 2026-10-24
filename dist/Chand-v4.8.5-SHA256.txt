@@ -1,0 +1,1 @@
+4a8f7bd8428963b49a55249022d72a468f1f3edf7b3edb624bc732a15545599a  out/Chand-v4.8.5-status-system-debug.apk
