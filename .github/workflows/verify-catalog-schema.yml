@@ -1,0 +1,34 @@
+name: Probe Catalog Schemas
+on:
+  push:
+    paths: [.github/workflows/verify-catalog-schema.yml]
+    branches: ['fix/v4-8-8-repair-add-symbols-tgju-tsetmc']
+  workflow_dispatch:
+jobs:
+  check:
+    runs-on: ubuntu-latest
+    timeout-minutes: 4
+    steps:
+      - name: Probe catalog list responses
+        run: |
+          python3 - <<'PY'
+          import urllib.request,concurrent.futures,json,time
+          urls={
+            "internal.page1":"https://api.tgju.org/v1/newsearch?module=markets.internal&page=1",
+            "internal.page12":"https://api.tgju.org/v1/newsearch?module=markets.internal&page=12",
+            "internal.stocks.page1":"https://api.tgju.org/v1/newsearch?module=markets.internal.stocks&page=1",
+            "internal.stocks.query":"https://api.tgju.org/v1/newsearch?module=markets.internal.stocks&page=1&q=%D9%81%D9%88%D9%84%D8%A7%D8%AF",
+            "internal.query":"https://api.tgju.org/v1/newsearch?module=markets.internal&page=1&q=%D8%AF%D9%84%D8%A7%D8%B1",
+            "markets.root":"https://api.tgju.org/v1/newsearch?module=markets&page=1",
+            "markets.global":"https://api.tgju.org/v1/newsearch?module=markets.global&page=1"
+          }
+          def fetch(kv):
+            key,url=kv; start=time.monotonic()
+            try:
+              req=urllib.request.Request(url,headers={"User-Agent":"Mozilla/5.0 (Linux; Android 14) AppleWebKit/537.36 Chrome/126 Mobile Safari/537.36","Accept":"application/json,text/plain,*/*","Referer":"https://www.tgju.org/"})
+              with urllib.request.urlopen(req,timeout=17) as resp: body=resp.read(50000)
+              j=json.loads(body); rows=j.get("list") or []; return key,round(time.monotonic()-start,1),resp.status,j.get("last"),j.get("count_result"),len(rows),[(r.get("type"),r.get("grade"),r.get("s3"),r.get("title")) for r in rows[:2]]
+            except Exception as e:return key,round(time.monotonic()-start,1),type(e).__name__,str(e)[:100]
+          with concurrent.futures.ThreadPoolExecutor(max_workers=7) as pool:
+            for res in pool.map(fetch,urls.items()): print("CATALOG_CHECK",json.dumps(res,ensure_ascii=False))
+          PY
