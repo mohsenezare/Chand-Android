@@ -27,7 +27,7 @@ jobs:
             try:
               req=urllib.request.Request(url,headers={"User-Agent":"Mozilla/5.0 (Linux; Android 14) AppleWebKit/537.36 Chrome/126 Mobile Safari/537.36","Accept":"application/json,text/plain,*/*","Referer":"https://www.tgju.org/"})
               with urllib.request.urlopen(req,timeout=17) as resp: body=resp.read(50000)
-              j=json.loads(body); rows=j.get("list") or []; return key,round(time.monotonic()-start,1),resp.status,j.get("last"),j.get("count_result"),len(rows),[(r.get("type"),r.get("grade"),r.get("s3"),r.get("title")) for r in rows[:2]]
+              j=json.loads(body); rows=j.get("list") or []; return key,round(time.monotonic()-start,1),resp.status,j.get("last"),j.get("count_result"),len(rows),[(r.get("type"),r.get("grade"),r.get("s1"),r.get("s2"),r.get("s3"),r.get("n1"),r.get("n2"),r.get("title")) for r in rows[:2]]
             except Exception as e:return key,round(time.monotonic()-start,1),type(e).__name__,str(e)[:100]
           with concurrent.futures.ThreadPoolExecutor(max_workers=7) as pool:
             for res in pool.map(fetch,urls.items()): print("CATALOG_CHECK",json.dumps(res,ensure_ascii=False))
