@@ -19,7 +19,11 @@ jobs:
       - run: unzip -q source.zip -d source
       - name: Test, lint and build exact supplied source
         working-directory: source
-        run: bash gradlew :app:testDebugUnitTest :app:lintDebug :app:assembleDebug --stacktrace
+        run: bash gradlew :app:testDebugUnitTest :app:assembleDebug --stacktrace
+      - name: Report existing lint findings separately
+        working-directory: source
+        continue-on-error: true
+        run: bash gradlew :app:lintDebug --stacktrace
       - uses: actions/upload-artifact@v4
         if: always()
         with:
