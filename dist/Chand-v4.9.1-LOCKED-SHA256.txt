@@ -1,1 +1,1 @@
-d896bdb4b3bff9fbc857bd12bcb1bf9ebf0ae639df6efd721e18dea232551d37  out/Chand-v4.9.1-LOCKED-debug.apk
+65dfe6e630563aa8911eaf5b008e990fff709387704895706566432718421412  out/Chand-v4.9.1-LOCKED-debug.apk
