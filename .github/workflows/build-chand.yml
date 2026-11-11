@@ -130,7 +130,7 @@ jobs:
             exit 1
           fi
           echo "No TGJU/Investing/TradingView references remain in production Kotlin source."
-      - name: Inspect locked v4.8.4 patched settings
+      - name: Inspect migrated Chand 4.12 settings
         shell: bash
         run: |
           set -euxo pipefail
@@ -180,14 +180,30 @@ jobs:
         shell: bash
         run: |
           set -euxo pipefail
-          mkdir -p dist
+          mkdir -p dist release/v4.12
           cp out/Chand-v4.12-arzdigital-tsetmc-debug.apk dist/Chand-v4.12-arzdigital-tsetmc-debug.apk
           cp out/SHA256.txt dist/Chand-v4.12-SHA256.txt
+          mkdir -p release/v4.12/source
+          rsync -a --delete --exclude='*/build/' --exclude='.gradle/' --exclude='local.properties' source/ release/v4.12/source/
+          {
+            echo "# Chand 4.12 build report"
+            echo
+            echo "- Source commit: $GITHUB_SHA"
+            echo "- Build: `./gradlew testDebugUnitTest assembleDebug`"
+            echo "- TSETMC: retained as the only Iranian stock quote/catalog source"
+            echo "- Non-stock markets: ArzDigital public pages"
+            echo "- Legacy provider scan: passed"
+            echo "- Unit tests and APK build: passed (this report is generated only after successful Gradle build)"
+            echo
+            echo "## APK SHA-256"
+            cat out/SHA256.txt
+          } > release/v4.12/BUILD_REPORT.md
           git config user.name "github-actions[bot]"
           git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
           git add dist/Chand-v4.12-arzdigital-tsetmc-debug.apk dist/Chand-v4.12-SHA256.txt
+          git add -f release/v4.12/source release/v4.12/BUILD_REPORT.md
           if ! git diff --cached --quiet; then
-            git commit -m "Publish Chand v4.12 APK [skip ci]"
+            git commit -m "Publish Chand v4.12 source, APK and test report [skip ci]"
             git push
           fi
 
