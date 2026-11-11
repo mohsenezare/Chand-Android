@@ -115,3 +115,16 @@ repo_text = repo_text.replace(
     "MarketParsers.appendPoint(previous?.history.orEmpty(), quote.sourceUpdatedAtMillis.takeIf { it > 0L } ?: receivedAtMillis, price)"
 )
 repo_file.write_text(repo_text)
+
+# The legacy source may contain a detached catalogue function body; keep only the
+# first well-formed refreshGlobalArzDigitalCatalogStrict declaration.
+repo_text = repo_file.read_text()
+signature = "    suspend fun refreshGlobalArzDigitalCatalogStrict("
+first = repo_text.find(signature)
+second = repo_text.find(signature, first + len(signature)) if first >= 0 else -1
+if second >= 0:
+    end = repo_text.find("    private suspend fun loadTsetmcCatalog(", second)
+    if end < 0:
+        raise SystemExit("Could not locate end of duplicate ArzDigital catalogue method")
+    repo_text = repo_text[:second] + repo_text[end:]
+repo_file.write_text(repo_text)
