@@ -135,3 +135,14 @@ if parser_tests.exists():
     test_text = parser_tests.read_text()
     test_text = re.sub(r"(?m)^(\s*@Test\s*\n){2,}", lambda m: m.group(0).splitlines()[0] + "\n", test_text)
     parser_tests.write_text(test_text)
+
+# Rebuild the test annotations deterministically after pruning old TGJU tests.
+if parser_tests.exists():
+    test_text = parser_tests.read_text()
+    test_lines = [line for line in test_text.splitlines() if line.strip() != "@Test"]
+    normalized_lines = []
+    for line in test_lines:
+        if re.match(r"^\\s*fun\\s+", line):
+            normalized_lines.append("    @Test")
+        normalized_lines.append(line)
+    parser_tests.write_text("\\n".join(normalized_lines) + "\\n")
