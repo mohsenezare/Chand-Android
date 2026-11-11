@@ -189,7 +189,7 @@ jobs:
             echo "# Chand 4.12 build report"
             echo
             echo "- Source commit: $GITHUB_SHA"
-            echo "- Build: `./gradlew testDebugUnitTest assembleDebug`"
+            echo "- Build: Gradle unit tests and debug APK assembly"
             echo "- TSETMC: retained as the only Iranian stock quote/catalog source"
             echo "- Non-stock markets: ArzDigital public pages"
             echo "- Legacy provider scan: passed"
@@ -204,7 +204,7 @@ jobs:
           git add -f release/v4.12/source release/v4.12/BUILD_REPORT.md
           if ! git diff --cached --quiet; then
             git commit -m "Publish Chand v4.12 source, APK and test report [skip ci]"
-            git push
+            git -c http.extraheader="AUTHORIZATION: basic $(printf "x-access-token:%s" "$GITHUB_TOKEN" | base64 -w0)" push origin HEAD:"$GITHUB_REF_NAME"
           fi
 
 # Rebuild verified v4.0 APK
