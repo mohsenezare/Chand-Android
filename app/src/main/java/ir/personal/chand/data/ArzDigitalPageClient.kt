@@ -84,8 +84,10 @@ internal class ArzDigitalPageClient(
         val toman = tomanLabeled ?: Regex("""([۰-۹٠-٩0-9][۰-۹٠-٩0-9,٬٫]*(?:[.٫][0-9]+)?)\s*(?:تومان|ت)""")
             .find(plain)?.groupValues?.get(1)?.let(::number)
 
-        val change = Regex("""(?is)قیمت امروز.{0,100}?به (?:تومان|دلار):\s*([+−-]?[۰-۹٠-٩0-9]+(?:[.٫][۰-۹٠-٩0-9]+)?)\s*%""")
+        val change = Regex("""(?is)قیمت امروز.{0,100}?به تومان:\s*([+−-]?[۰-۹٠-٩0-9]+(?:[.٫][۰-۹٠-٩0-9]+)?)\s*%""")
             .find(plain)?.groupValues?.get(1)?.let(::number)
+            ?: Regex("""(?is)قیمت امروز.{0,100}?به دلار:\s*([+−-]?[۰-۹٠-٩0-9]+(?:[.٫][۰-۹٠-٩0-9]+)?)\s*%""")
+                .find(plain)?.groupValues?.get(1)?.let(::number)
             ?: Regex("""([+−-]?[۰-۹٠-٩0-9]+(?:[.٫][۰-۹٠-٩0-9]+)?)\s*%""")
                 .find(plain)?.groupValues?.get(1)?.let(::number)
 
