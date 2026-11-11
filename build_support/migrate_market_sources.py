@@ -146,3 +146,15 @@ if parser_tests.exists():
             normalized_lines.append("    @Test")
         normalized_lines.append(line)
     parser_tests.write_text("\n".join(normalized_lines) + "\n")
+
+# Final deterministic annotation repair: eliminate all existing @Test markers and
+# reinsert exactly one immediately before each test function.
+if parser_tests.exists():
+    test_text = parser_tests.read_text()
+    test_lines = [line for line in test_text.splitlines() if line.strip() != "@Test"]
+    normalized_lines = []
+    for line in test_lines:
+        if re.match(r"^\\s*fun\\s+", line):
+            normalized_lines.append("    @Test")
+        normalized_lines.append(line)
+    parser_tests.write_text("\\n".join(normalized_lines) + "\\n")
