@@ -1,0 +1,552 @@
+--- 3.2/app/src/main/java/ir/personal/chand/MainActivity.kt
++++ 3.3/app/src/main/java/ir/personal/chand/MainActivity.kt
+@@ -395,14 +395,15 @@
+         category.contains("طلا") || category.contains("سکه") || symbol.equals("GOLD", true)
+     val isSilver = id == "silver" || category.contains("نقره") || symbol.equals("SILVER", true)
+     val upperCode = code.uppercase()
+-    val isBitcoin = upperCode.startsWith("BTC") || name.contains("bitcoin", ignoreCase = true)
+-    val isEthereum = upperCode.startsWith("ETH") || name.contains("ethereum", ignoreCase = true)
+-    val isTether = id == "usdt" || upperCode.startsWith("USDT") || name.contains("tether", ignoreCase = true)
++    val isBitcoin = symbol == "BTC" || upperCode.startsWith("BTC") || name.contains("bitcoin", ignoreCase = true)
++    val isEthereum = symbol == "ETH" || upperCode.startsWith("ETH") || name.contains("ethereum", ignoreCase = true)
++    val isTether = symbol == "USDT" || id == "usdt" || upperCode.startsWith("USDT") || name.contains("tether", ignoreCase = true)
+     val isCrypto = isBitcoin || isEthereum || isTether || category.contains("دیجیتال") || symbol.equals("CRYPTO", true)
+     val isOil = id == "brent" || category.contains("نفت") || category.contains("انرژی") || symbol.equals("OIL", true)
+     val isStock = category.contains("بورس") || category.contains("سهام") || category.contains("صندوق") ||
+         symbol.equals("TSE", true)
+-    val isFx = category.contains("ارز") || symbol.equals("FX", true) ||
++    val isCurrencySymbol = symbol in setOf("USD", "EUR", "GBP", "JPY", "CNY", "AED", "TRY", "RUB", "INR")
++    val isFx = isCurrencySymbol || category.contains("ارز") || symbol.equals("FX", true) ||
+         code.uppercase().let { it.length == 3 && it.all(Char::isLetter) }
+     val isIndex = category.contains("شاخص") || name.contains("شاخص")
+     val isCar = category.contains("خودرو") || symbol.equals("CAR", true)
+@@ -412,7 +413,7 @@
+             val radius = size.minDimension / 2f
+             val center = Offset(size.width / 2f, size.height / 2f)
+             when {
+-                id == "usd" -> {
++                (id == "usd" || symbol == "USD") -> {
+                     val circle = Path().apply {
+                         addOval(Rect(center - Offset(radius, radius), center + Offset(radius, radius)))
+                     }
+@@ -444,7 +445,7 @@
+                         }
+                     }
+                 }
+-                id == "euro" -> {
++                (id == "euro" || symbol == "EUR") -> {
+                     drawCircle(Color(0xFF1849A9), radius, center)
+                     repeat(12) { index ->
+                         val angle = 2.0 * PI * index / 12.0 - PI / 2.0
+@@ -547,8 +548,8 @@
+             isIndex || isCar -> ""
+             isCrypto -> code.ifBlank { name }.uppercase().substringBefore('/').take(3)
+             isStock -> name.ifBlank { code }.take(3)
+-            id in setOf("usd", "euro") -> ""
+-            isFx -> currencyBadge(code.ifBlank { name })
++            id in setOf("usd", "euro") || symbol in setOf("USD", "EUR") -> ""
++            isFx -> currencyBadge(if (isCurrencySymbol) symbol else code.ifBlank { name })
+             else -> code.ifBlank { symbol.ifBlank { name } }.take(3)
+         }
+         if (label.isNotBlank()) {
+--- 3.2/app/src/main/java/ir/personal/chand/MainViewModel.kt
++++ 3.3/app/src/main/java/ir/personal/chand/MainViewModel.kt
+@@ -16,6 +16,9 @@
+ import ir.personal.chand.data.ThemeMode
+ import ir.personal.chand.data.UserSettings
+ import ir.personal.chand.widget.WidgetUpdater
++import kotlinx.coroutines.CancellationException
++import kotlinx.coroutines.currentCoroutineContext
++import kotlinx.coroutines.ensureActive
+ import kotlinx.coroutines.Job
+ import kotlinx.coroutines.channels.Channel
+ import kotlinx.coroutines.delay
+@@ -67,6 +70,7 @@
+     private var catalogPage = 1
+ 
+     init {
++        WidgetUpdater.schedule(application)
+         repository.knownDescriptors().forEach { descriptorCache[it.id] = it }
+     }
+ 
+@@ -76,7 +80,13 @@
+             var firstLoad = _uiState.value.snapshot == null
+             while (isActive) {
+                 val startedAt = SystemClock.elapsedRealtime()
+-                refreshOnce(showInitialLoading = firstLoad)
++                try {
++                    refreshOnce(showInitialLoading = firstLoad)
++                } catch (cancelled: CancellationException) {
++                    throw cancelled
++                } catch (_: Exception) {
++                    _uiState.update { it.copy(loading = false, connectionState = LiveConnectionState.OFFLINE) }
++                }
+                 firstLoad = false
+                 val remaining = (ACTIVE_REFRESH_INTERVAL_MS -
+                     (SystemClock.elapsedRealtime() - startedAt)).coerceAtLeast(0L)
+@@ -89,6 +99,7 @@
+     fun stopPolling() {
+         pollingJob?.cancel()
+         pollingJob = null
++        repository.flushCache()
+     }
+ 
+     fun refresh() {
+@@ -153,11 +164,16 @@
+     fun setVisibleIds(ids: Set<String>) {
+         val ordered = repository.rememberSelection(ids, descriptorCache.values)
+         updateSettings { copy(visibleIds = ordered) }
+-        refreshSignal.trySend(Unit)
++        if (_uiState.value.chart.itemId !in ordered) clearChart()
++        if (pollingJob?.isActive == true) {
++            stopPolling()
++            startPolling()
++        }
+     }
+ 
+ 
+     private fun loadHistory(itemId: String, range: HistoryRange) {
++        if (itemId !in _uiState.value.settings.visibleIds) return
+         historyJob?.cancel()
+         val immediate = _uiState.value.snapshot?.items
+             ?.firstOrNull { it.id == itemId }
+@@ -190,7 +206,10 @@
+     private suspend fun refreshOnce(showInitialLoading: Boolean) {
+         if (showInitialLoading) _uiState.update { it.copy(loading = true) }
+         val visibleIds = _uiState.value.settings.visibleIds
++        val refreshStartedAt = System.currentTimeMillis()
+         val snapshot = repository.fetch(visibleIds)
++        currentCoroutineContext().ensureActive()
++        if (_uiState.value.settings.visibleIds != visibleIds) return
+         val sanitizedVisibleIds = repository.sanitizeVisibleIds(visibleIds)
+         if (sanitizedVisibleIds != visibleIds) {
+             val cleaned = _uiState.value.settings.copy(visibleIds = sanitizedVisibleIds)
+@@ -205,8 +224,8 @@
+             current.copy(
+                 loading = false,
+                 snapshot = snapshot,
+-                connectionState = if (snapshot.items.any(MarketItem::isAvailable)) {
+-                    LiveConnectionState.LIVE
++                connectionState = if (snapshot.items.any { it.isAvailable && it.receivedAtMillis >= refreshStartedAt }) {
++                    LiveConnectionState.POLLING
+                 } else {
+                     LiveConnectionState.OFFLINE
+                 },
+--- 3.2/app/src/main/java/ir/personal/chand/data/MarketRepository.kt
++++ 3.3/app/src/main/java/ir/personal/chand/data/MarketRepository.kt
+@@ -1,6 +1,16 @@
+ package ir.personal.chand.data
+ 
+ import android.content.Context
++import kotlinx.coroutines.CancellationException
++import kotlinx.coroutines.suspendCancellableCoroutine
++import kotlinx.coroutines.currentCoroutineContext
++import kotlinx.coroutines.ensureActive
++import okhttp3.Call
++import okhttp3.Callback
++import okhttp3.Response
++import java.io.IOException
++import kotlin.coroutines.resume
++import kotlin.coroutines.resumeWithException
+ import kotlinx.coroutines.Dispatchers
+ import kotlinx.coroutines.async
+ import kotlinx.coroutines.coroutineScope
+@@ -117,11 +127,11 @@
+             // Nothing else is refreshed in the background.
+             val tgjuRequest = async {
+                 if (tgjuDescriptors.isEmpty()) Result.success(MarketParsers.IndicatorResult(emptyList(), emptySet()))
+-                else runCatching { fetchTgjuItems(tgjuDescriptors, previous, receivedAt) }
++                else requestResult { fetchTgjuItems(tgjuDescriptors, previous, receivedAt) }
+             }
+             val tradingViewRequest = async {
+                 if (tradingViewDescriptors.isEmpty()) Result.success(emptyList())
+-                else runCatching { fetchTradingViewItems(tradingViewDescriptors, previous, receivedAt) }
++                else requestResult { fetchTradingViewItems(tradingViewDescriptors, previous, receivedAt) }
+             }
+ 
+             val tgjuResult = tgjuRequest.await()
+@@ -131,23 +141,16 @@
+                 tvResult.getOrNull()?.let(::addAll)
+             }
+ 
++            currentCoroutineContext().ensureActive()
+             synchronized(lastItems) {
+                 freshItems.forEach { incoming ->
+                     val current = lastItems[incoming.id]
+-                    if (current == null || incoming.sourceUpdatedAtMillis >= current.sourceUpdatedAtMillis) {
++                    if (current == null || incoming.source == MarketSource.TRADINGVIEW ||
++                        incoming.sourceUpdatedAtMillis >= current.sourceUpdatedAtMillis) {
+                         lastItems[incoming.id] = incoming
+                     }
+                 }
+             }
+-
+-            // A TGJU instrument is removed only after we have a verified source timestamp
+-            // older than six calendar months. Temporary provider failures never delete it.
+-            val cutoff = activeTgjuCutoffMillis()
+-            val staleTgjuIds = tgjuDescriptors.mapNotNull { descriptor ->
+-                val item = synchronized(lastItems) { lastItems[descriptor.id] }
+-                item?.sourceUpdatedAtMillis?.takeIf { it in 1 until cutoff }?.let { descriptor.id }
+-            }.toSet()
+-            if (staleTgjuIds.isNotEmpty()) retireDescriptors(staleTgjuIds)
+ 
+             // Never surface provider warnings in the main UI. If a source is temporarily
+             // unavailable, snapshotOf() keeps the last valid quote already cached.
+@@ -172,7 +175,7 @@
+                 )
+             }
+ 
+-            runCatching {
++            requestResult {
+                 val cacheKind = if (range == HistoryRange.DAY) "day" else "long"
+                 val cacheKey = "${descriptor.sourceKey}:$cacheKind"
+                 val ttl = if (range == HistoryRange.DAY) 60_000L else 10 * 60_000L
+@@ -222,7 +225,7 @@
+         val modules = listOf("markets.internal", "markets.global")
+         val results = coroutineScope {
+             modules.map { module ->
+-                async { runCatching { fetchTgjuCatalogModule(module, query, page) } }
++                async { requestResult { fetchTgjuCatalogModule(module, query, page) } }
+             }.map { it.await() }
+         }
+         val successful = results.mapNotNull { it.getOrNull() }
+@@ -246,7 +249,7 @@
+         )
+     }
+ 
+-    private fun fetchTgjuItems(
++    private suspend fun fetchTgjuItems(
+         descriptors: List<MarketDescriptor>,
+         previousItems: Map<String, MarketItem>,
+         receivedAtMillis: Long
+@@ -268,7 +271,7 @@
+         return MarketParsers.IndicatorResult(allItems, missing)
+     }
+ 
+-    private fun fetchTradingViewItems(
++    private suspend fun fetchTradingViewItems(
+         descriptors: List<MarketDescriptor>,
+         previousItems: Map<String, MarketItem>,
+         receivedAtMillis: Long
+@@ -318,8 +321,10 @@
+                 low = low,
+                 buy = buy,
+                 sell = sell,
+-                history = MarketParsers.appendPoint(previous?.history.orEmpty(), receivedAtMillis, price),
+-                sourceUpdatedAtMillis = receivedAtMillis,
++                history = if (previous?.price == price) previous.history else
++                    MarketParsers.appendPoint(previous?.history.orEmpty(), receivedAtMillis, price),
++                // Scanner does not provide a verified last-trade timestamp.
++                sourceUpdatedAtMillis = 0L,
+                 receivedAtMillis = receivedAtMillis,
+                 origin = DataOrigin.NETWORK,
+                 isAvailable = true,
+@@ -340,33 +345,13 @@
+         }
+     }
+ 
+-    private fun fetchTgjuCatalogModule(module: String, query: String, page: Int): CatalogModulePage {
++    private suspend fun fetchTgjuCatalogModule(module: String, query: String, page: Int): CatalogModulePage {
+         val queryPart = query.trim().takeIf { it.isNotEmpty() }?.let { "&q=${encode(it)}" }.orEmpty()
+         val root = JSONObject(httpGet("$TGJU_API/v1/newsearch?module=$module&page=$page$queryPart", 8_000))
+         val items = objectList(root.opt("list"))
+             .filter(::isActiveTgjuRecord)
+             .mapNotNull(::parseTgjuDescriptor)
+         return CatalogModulePage(items, !root.optBoolean("last", false) && items.isNotEmpty())
+-    }
+-
+-    /**
+-     * TGJU search can return archived/legacy instruments that still have a search record.
+-     * Keep defaults, then validate dynamic entries against the quote endpoint and reject
+-     * records whose last source update is old enough to clearly be historical.
+-     *
+-     * If quote validation itself is unavailable, return the original candidates rather
+-     * than making the catalog disappear because of a temporary network/provider issue.
+-     */
+-    private fun activeTgjuCutoffMillis(): Long = java.time.ZonedDateTime.now(TEHRAN_ZONE)
+-        .minusMonths(6)
+-        .toInstant()
+-        .toEpochMilli()
+-
+-    private fun retireDescriptors(ids: Set<String>) {
+-        if (ids.isEmpty()) return
+-        synchronized(retiredIds) { retiredIds += ids }
+-        synchronized(lastItems) { ids.forEach(lastItems::remove) }
+-        synchronized(knownDescriptors) { ids.forEach(knownDescriptors::remove) }
+     }
+ 
+     private fun isActiveTgjuRecord(value: JSONObject): Boolean {
+@@ -413,6 +398,8 @@
+ 
+     private fun parseCatalogDate(raw: String): LocalDate? {
+         val normalized = raw.take(10).replace('/', '-')
++        // Do not interpret a Jalali year as a Gregorian expiration.
++        if ((normalized.substringBefore('-').toIntOrNull() ?: 0) < 1900) return null
+         return try {
+             LocalDate.parse(normalized, DateTimeFormatter.ISO_LOCAL_DATE)
+         } catch (_: DateTimeParseException) {
+@@ -462,7 +449,9 @@
+     private fun snapshotOf(visibleIds: List<String>, message: String? = null): MarketSnapshot {
+         val descriptors = resolveVisibleDescriptors(visibleIds)
+         val items = synchronized(lastItems) {
+-            descriptors.map { descriptor -> lastItems[descriptor.id] ?: unavailableItem(descriptor) }
++            descriptors.map { descriptor ->
++                lastItems[descriptor.id]?.copy(symbol = descriptor.symbol) ?: unavailableItem(descriptor)
++            }
+         }
+         val available = items.filter(MarketItem::isAvailable)
+         val latest = available.maxOfOrNull(MarketItem::sourceUpdatedAtMillis) ?: 0L
+@@ -481,16 +470,20 @@
+             ids.distinct()
+                 .filterNot { it in retiredIds }
+                 .mapNotNull { defaultById[it] ?: knownDescriptors[it] }
+-                .filter { it.source == MarketSource.TGJU || it.source == MarketSource.TRADINGVIEW }
++                .filter(::isAllowedDescriptor)
+         }
+ 
+     /** Returns only ids that are still active and come from the two allowed providers. */
+     fun sanitizeVisibleIds(ids: List<String>): List<String> = synchronized(knownDescriptors) {
+         ids.distinct().filter { id ->
+-            id !in retiredIds && (defaultById[id] ?: knownDescriptors[id])?.source in
+-                setOf(MarketSource.TGJU, MarketSource.TRADINGVIEW)
+-        }
+-    }
++            id !in retiredIds && (defaultById[id] ?: knownDescriptors[id])?.let(::isAllowedDescriptor) == true
++        }
++    }
++
++    private fun isAllowedDescriptor(descriptor: MarketDescriptor): Boolean =
++        descriptor.source == MarketSource.TGJU || TRADINGVIEW_MARKET_DESCRIPTORS.any {
++            it.id == descriptor.id && it.sourceKey == descriptor.sourceKey
++        }
+ 
+     private fun unavailableItem(descriptor: MarketDescriptor) = MarketItem(
+         id = descriptor.id,
+@@ -527,7 +520,7 @@
+         return if (range == HistoryRange.DAY) MarketParsers.downsample(merged, 360) else merged
+     }
+ 
+-    private fun httpGet(url: String, timeoutMillis: Long): String {
++    private suspend fun httpGet(url: String, timeoutMillis: Long): String {
+         val request = Request.Builder()
+             .url(url)
+             .header("Accept", "application/json,text/plain,*/*")
+@@ -536,13 +529,10 @@
+             .build()
+         val call = httpClient.newCall(request)
+         call.timeout().timeout(timeoutMillis, TimeUnit.MILLISECONDS)
+-        return call.execute().use { response ->
+-            if (!response.isSuccessful) error("HTTP ${response.code}")
+-            response.body?.string()?.takeIf(String::isNotBlank) ?: error("Empty response")
+-        }
+-    }
+-
+-    private fun httpPost(url: String, jsonBody: String, timeoutMillis: Long): String {
++        return executeCancellable(call)
++    }
++
++    private suspend fun httpPost(url: String, jsonBody: String, timeoutMillis: Long): String {
+         val body = jsonBody.toRequestBody("text/plain; charset=utf-8".toMediaType())
+         val request = Request.Builder()
+             .url(url)
+@@ -555,10 +545,40 @@
+             .build()
+         val call = httpClient.newCall(request)
+         call.timeout().timeout(timeoutMillis, TimeUnit.MILLISECONDS)
+-        return call.execute().use { response ->
+-            if (!response.isSuccessful) error("HTTP ${response.code}")
+-            response.body?.string()?.takeIf(String::isNotBlank) ?: error("Empty response")
+-        }
++        return executeCancellable(call)
++    }
++
++    private suspend fun executeCancellable(call: Call): String = suspendCancellableCoroutine { continuation ->
++        continuation.invokeOnCancellation { call.cancel() }
++        call.enqueue(object : Callback {
++            override fun onFailure(call: Call, error: IOException) {
++                continuation.resumeWithException(error)
++            }
++            override fun onResponse(call: Call, response: Response) {
++                val result = runCatching {
++                    response.use {
++                        check(it.isSuccessful) { "HTTP ${it.code}" }
++                        it.body?.string()?.takeIf(String::isNotBlank) ?: error("Empty response")
++                    }
++                }
++                result.fold({ continuation.resume(it) }, { continuation.resumeWithException(it) })
++            }
++        })
++    }
++
++    private suspend fun <T> requestResult(block: suspend () -> T): Result<T> = try {
++        Result.success(block())
++    } catch (cancelled: CancellationException) {
++        throw cancelled
++    } catch (error: Exception) {
++        Result.failure(error)
++    }
++
++    fun flushCache() {
++        val items = synchronized(lastItems) { lastItems.values.filter(MarketItem::isAvailable) }
++        if (items.isNotEmpty()) prefs.edit().putString(
++            "cached_snapshot_v3", snapshotToJson(MarketSnapshot("", items, false)).toString()
++        ).apply()
+     }
+ 
+     private fun jsonNumber(value: Any?): Double? = when (value) {
+@@ -573,10 +593,7 @@
+         val now = System.currentTimeMillis()
+         if (now - lastCacheWriteAt < 30_000L) return
+         lastCacheWriteAt = now
+-        prefs.edit().putString(
+-            "cached_snapshot_v3",
+-            snapshotToJson(snapshot.copy(items = validItems)).toString()
+-        ).apply()
++        flushCache()
+     }
+ 
+     private fun loadCached(): MarketSnapshot? = prefs.getString("cached_snapshot_v3", null)
+@@ -601,7 +618,7 @@
+                 id = id,
+                 name = value.optString("name", descriptor?.name.orEmpty()),
+                 code = value.optString("code", descriptor?.code.orEmpty()),
+-                symbol = value.optString("symbol", descriptor?.symbol ?: "•"),
++                symbol = descriptor?.symbol ?: value.optString("symbol", "•"),
+                 price = price,
+                 change = number(value, "change") ?: 0.0,
+                 changePercent = number(value, "changePercent") ?: 0.0,
+@@ -725,6 +742,18 @@
+     private fun symbolFor(type: String, category: String, title: String): String {
+         val value = "$type $category $title"
+         return when {
++            title.contains("یورو") -> "EUR"
++            title.contains("دلار آمریکا") -> "USD"
++            title.contains("پوند") -> "GBP"
++            title.contains("ین ژاپن") -> "JPY"
++            title.contains("یوان") -> "CNY"
++            title.contains("درهم") -> "AED"
++            title.contains("لیر") -> "TRY"
++            title.contains("روبل") -> "RUB"
++            title.contains("روپیه") -> "INR"
++            title.contains("بیت کوین") || title.contains("بیت‌کوین") -> "BTC"
++            title.contains("اتریوم") -> "ETH"
++            title.contains("تتر") -> "USDT"
+             value.contains("ارز دیجیتال") || type.contains("crypto") -> "CRYPTO"
+             value.contains("طلا") || value.contains("سکه") -> "GOLD"
+             value.contains("نقره") -> "SILVER"
+--- 3.2/app/src/main/java/ir/personal/chand/widget/ChandWidgetProvider.kt
++++ 3.3/app/src/main/java/ir/personal/chand/widget/ChandWidgetProvider.kt
+@@ -61,15 +61,11 @@
+     appContext: Context,
+     params: WorkerParameters
+ ) : CoroutineWorker(appContext, params) {
+-    override suspend fun doWork(): Result = runCatching {
+-        val repository = MarketRepository(applicationContext)
+-        val settings = repository.loadSettings()
+-        val ids = settings.visibleIds.ifEmpty { DEFAULT_VISIBLE_IDS }
+-        val snapshot = repository.fetch(ids)
+-        if (snapshot.items.none(MarketItem::isAvailable)) error("No fresh market prices")
+-        WidgetUpdater.updateAll(applicationContext, snapshot.items, forceCacheWrite = true)
+-        Result.success()
+-    }.getOrElse { Result.retry() }
++    override suspend fun doWork(): Result {
++        // Compatibility for jobs left behind by older versions: render cache only.
++        WidgetUpdater.updateAll(applicationContext, WidgetUpdater.readItems(applicationContext))
++        return Result.success()
++    }
+ }
+ 
+ object WidgetUpdater {
+@@ -79,30 +75,12 @@
+     private var lastWidgetCacheWriteAt = 0L
+ 
+     fun schedule(context: Context) {
+-        val constraints = Constraints.Builder()
+-            .setRequiredNetworkType(NetworkType.CONNECTED)
+-            .build()
+-        val request = PeriodicWorkRequestBuilder<WidgetRefreshWorker>(15, TimeUnit.MINUTES)
+-            .setConstraints(constraints)
+-            .build()
+-        WorkManager.getInstance(context).enqueueUniquePeriodicWork(
+-            PERIODIC_WORK,
+-            ExistingPeriodicWorkPolicy.UPDATE,
+-            request
+-        )
++        WorkManager.getInstance(context).cancelUniqueWork(PERIODIC_WORK)
++        WorkManager.getInstance(context).cancelUniqueWork(IMMEDIATE_WORK)
+     }
+ 
+     fun refreshNow(context: Context) {
+-        val request = OneTimeWorkRequestBuilder<WidgetRefreshWorker>()
+-            .setConstraints(
+-                Constraints.Builder().setRequiredNetworkType(NetworkType.CONNECTED).build()
+-            )
+-            .build()
+-        WorkManager.getInstance(context).enqueueUniqueWork(
+-            IMMEDIATE_WORK,
+-            ExistingWorkPolicy.REPLACE,
+-            request
+-        )
++        updateAll(context, readItems(context))
+     }
+ 
+     fun updateAll(context: Context, incoming: List<MarketItem>, forceCacheWrite: Boolean = false) {
+--- 3.2/app/src/test/java/ir/personal/chand/data/MarketParsersTest.kt
++++ 3.3/app/src/test/java/ir/personal/chand/data/MarketParsersTest.kt
+@@ -60,20 +60,16 @@
+     }
+ 
+     @Test
+-    fun streamFrameAppliesNegativeDirectionAndSourceTime() {
+-        val fields = listOf(
+-            "market", "42", "price_eur", "", "", "", "2464000", "2500000",
+-            "2400000", "2430000", "74000", "3.10", "low", "", "2026-08-31 10:02:04"
+-        )
+-        val escaped = fields.joinToString("|")
+-        val body = """{"result":{"data":{"data":["$escaped"]}}}"""
+-
+-        val tick = MarketParsers.parseStreamMessage(body).single()
+-        assertEquals("price_eur", tick.sourceKey)
+-        assertEquals(2_464_000.0, tick.price, 0.001)
+-        assertEquals(-74_000.0, tick.change, 0.001)
+-        assertEquals(-3.10, tick.changePercent, 0.001)
+-        assertTrue(tick.sourceUpdatedAtMillis > 0L)
++    fun negativeQuoteUsesProviderTimeAndConvertsRials() {
++        val body = """{"response":{"indicators":[{
++            "name":"price_eur","p":"2464000","d":"74000","dp":"3.10",
++            "dt":"low","updated_at":"2026-08-31 10:02:04"
++        }]}}"""
++        val item = MarketParsers.parseTgjuIndicators(body, listOf(euro), emptyMap(), 123L).items.single()
++        assertEquals(246_400.0, item.price, 0.001)
++        assertEquals(-7_400.0, item.change, 0.001)
++        assertEquals(-3.10, item.changePercent, 0.001)
++        assertTrue(item.sourceUpdatedAtMillis > 0L)
+     }
+ 
+     @Test
+--- 3.2/app/build.gradle.kts
++++ 3.3/app/build.gradle.kts
+@@ -13,8 +13,8 @@
+         applicationId = "ir.personal.chand"
+         minSdk = 26
+         targetSdk = 35
+-        versionCode = 12
+-        versionName = "3.2-final"
++        versionCode = 13
++        versionName = "3.3-review"
+ 
+         testInstrumentationRunner = "androidx.test.runner.AndroidJUnitRunner"
+         vectorDrawables.useSupportLibrary = true
+--- 3.2/.github/workflows/android-build.yml
++++ 3.3/.github/workflows/android-build.yml
+@@ -15,8 +15,8 @@
+       - uses: android-actions/setup-android@v3
+       - run: sdkmanager "platforms;android-35" "build-tools;35.0.0"
+       - run: chmod +x gradlew
+-      - run: ./gradlew clean assembleDebug --stacktrace
++      - run: ./gradlew clean :app:testDebugUnitTest :app:lintDebug :app:assembleDebug --stacktrace
+       - uses: actions/upload-artifact@v4
+         with:
+-          name: Chand-3.0-final-debug
++          name: Chand-3.3-review-debug
+           path: app/build/outputs/apk/debug/app-debug.apk

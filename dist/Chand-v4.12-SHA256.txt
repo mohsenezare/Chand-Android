@@ -1,1 +1,1 @@
-e296534a87ea2b80e7892fd96c8e154a10a39e64a0b9fb343466bf927e266ffc  out/Chand-v4.12-arzdigital-migration-debug.apk
+359de78ee06f957bd6b659f8bab167822708c911d71476cdf7836329c4355e5b  out/Chand-v4.12-arzdigital-tsetmc-debug.apk

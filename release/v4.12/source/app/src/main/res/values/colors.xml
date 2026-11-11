@@ -1,0 +1,14 @@
+<resources>
+    <color name="chand_icon_background">#FAF7F6</color>
+    <color name="widget_background">#F2F1EE</color>
+    <color name="widget_surface">#FEFEFD</color>
+    <color name="widget_surface_alt">#F2F2F4</color>
+    <color name="widget_text">#111113</color>
+    <color name="widget_muted">#7D7D83</color>
+    <color name="widget_up">#21A468</color>
+    <color name="widget_down">#D94B55</color>
+    <color name="widget_neutral">#8E8E93</color>
+    <color name="widget_border">#D9D9DE</color>
+    <color name="widget_divider">#E5E5E8</color>
+    <color name="widget_chip">#ECECEF</color>
+</resources>
