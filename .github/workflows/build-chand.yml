@@ -110,6 +110,15 @@ jobs:
           set -euxo pipefail
           echo "Legacy provider references remain in current base source; release gate must stay red until the repository and view-model paths are migrated."
           grep -RniE 'TGJU|Investing|TradingView' source/app/src/main/java/ir/personal/chand --include='*.kt' | head -100 || true
+      - name: Install robust TSETMC search parser and tests
+        shell: bash
+        run: |
+          set -euxo pipefail
+          mkdir -p source/app/src/main/java/ir/personal/chand/data
+          mkdir -p source/app/src/test/java/ir/personal/chand/data
+          cp app/src/main/java/ir/personal/chand/data/TsetmcSearchParser.kt source/app/src/main/java/ir/personal/chand/data/
+          cp app/src/test/java/ir/personal/chand/data/TsetmcSearchParserTest.kt source/app/src/test/java/ir/personal/chand/data/
+          python3 build_support/patch_tsetmc_search.py
       - name: Inspect locked v4.8.4 patched settings
         shell: bash
         run: |
