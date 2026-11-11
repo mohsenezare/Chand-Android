@@ -37,6 +37,14 @@ class ArzDigitalPageClientTest {
             "https://arzdigital.com/convert/emami-gold/ir-toman/",
             parser.pageUrl("emami-coin")
         )
+        assertEquals(
+            "https://arzdigital.com/convert/pound-sterling/ir-toman/",
+            parser.pageUrl("british-pound-sterling")
+        )
+        assertEquals(
+            "https://arzdigital.com/convert/japanese-yen/ir-toman/",
+            parser.pageUrl("japanese-yen")
+        )
     }
 
     @Test fun parsesFiatConverterPageLabeledQuotes() {
