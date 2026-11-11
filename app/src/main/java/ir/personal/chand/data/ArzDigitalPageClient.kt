@@ -52,6 +52,8 @@ internal class ArzDigitalPageClient(
     internal fun pageUrl(slug: String): String = when (slug) {
         "united-states-dollar" -> "$BASE/convert/united-states-dollar/ir-toman/"
         "euro" -> "$BASE/convert/euro/ir-toman/"
+        "british-pound-sterling" -> "$BASE/convert/pound-sterling/ir-toman/"
+        "japanese-yen" -> "$BASE/convert/japanese-yen/ir-toman/"
         "gold-18-karat" -> "$BASE/convert/gold-gerami-18/ir-toman/"
         "emami-coin" -> "$BASE/convert/emami-gold/ir-toman/"
         "gold" -> "$BASE/convert/gold-ounce/ir-toman/"
