@@ -133,5 +133,5 @@ repo_file.write_text(repo_text)
 parser_tests = Path("source/app/src/test/java/ir/personal/chand/data/MarketParsersTest.kt")
 if parser_tests.exists():
     test_text = parser_tests.read_text()
-    test_text = re.sub(r"(?m)^(\\s*@Test\\s*\\n){2,}", lambda m: m.group(0).splitlines()[0] + "\\n", test_text)
+    test_text = re.sub(r"(?m)^(\s*@Test\s*\n){2,}", lambda m: m.group(0).splitlines()[0] + "\n", test_text)
     parser_tests.write_text(test_text)
