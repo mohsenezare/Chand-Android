@@ -99,3 +99,19 @@ if "import ir.personal.chand.data.MarketSource" not in activity_text:
         1
     )
 activity_file.write_text(activity_text)
+
+# Correct the generated release metadata to 4.12.0.
+gradle_file = Path("source/app/build.gradle.kts")
+if gradle_file.exists():
+    gradle_text = gradle_file.read_text()
+    gradle_text = re.sub(r"versionCode\\s*=\\s*\\d+", "versionCode = 412", gradle_text, count=1)
+    gradle_text = re.sub(r'versionName\\s*=\\s*"[^"]+"', 'versionName = "4.12.0"', gradle_text, count=1)
+    gradle_file.write_text(gradle_text)
+
+# Use a valid receive-time fallback for the ArzDigital session history point.
+repo_text = repo_file.read_text()
+repo_text = repo_text.replace(
+    "MarketParsers.appendPoint(previous?.history.orEmpty(), quote.sourceUpdatedAtMillis, price)",
+    "MarketParsers.appendPoint(previous?.history.orEmpty(), quote.sourceUpdatedAtMillis.takeIf { it > 0L } ?: receivedAtMillis, price)"
+)
+repo_file.write_text(repo_text)
