@@ -72,19 +72,19 @@ internal class ArzDigitalPageClient(
             throw IOException("ArzDigital asset identity could not be verified: $slug")
         }
 
-        val usdLabeled = Regex("""(?is)قیمت امروز.{0,100}?به دلار:\\s*[+−-]?[۰-۹0-9.,]+\\s*%\\s*\\$\\s*([0-9][0-9,]*(?:\\.[0-9]+)?)""")
+        val usdLabeled = Regex("""(?is)قیمت امروز.{0,100}?به دلار:\s*[+−-]?[۰-۹0-9.,]+\s*%\s*\$\s*([0-9][0-9,]*(?:\.[0-9]+)?)""")
             .find(plain)?.groupValues?.get(1)?.let(::number)
-        val usd = usdLabeled ?: Regex("""\\$\\s*([0-9][0-9,]*(?:\\.[0-9]+)?)""")
-            .find(plain)?.groupValues?.get(1)?.let(::number)
-
-        val tomanLabeled = Regex("""(?is)قیمت امروز.{0,100}?به تومان:\\s*[+−-]?[۰-۹0-9.,]+\\s*%\\s*([۰-۹٠-٩0-9,٬٫]+)\\s*(?:تومان|ت)""")
-            .find(plain)?.groupValues?.get(1)?.let(::number)
-        val toman = tomanLabeled ?: Regex("""([۰-۹٠-٩0-9][۰-۹٠-٩0-9,٬٫]*(?:[.٫][0-9]+)?)\\s*(?:تومان|ت)""")
+        val usd = usdLabeled ?: Regex("""\$\s*([0-9][0-9,]*(?:\.[0-9]+)?)""")
             .find(plain)?.groupValues?.get(1)?.let(::number)
 
-        val change = Regex("""(?is)قیمت امروز.{0,100}?به (?:تومان|دلار):\\s*([+−-]?[۰-۹٠-٩0-9]+(?:[.٫][۰-۹٠-٩0-9]+)?)\\s*%""")
+        val tomanLabeled = Regex("""(?is)قیمت امروز.{0,100}?به تومان:\s*[+−-]?[۰-۹0-9.,]+\s*%\s*([۰-۹٠-٩0-9,٬٫]+)\s*(?:تومان|ت)""")
             .find(plain)?.groupValues?.get(1)?.let(::number)
-            ?: Regex("""([+−-]?[۰-۹٠-٩0-9]+(?:[.٫][۰-۹٠-٩0-9]+)?)\\s*%""")
+        val toman = tomanLabeled ?: Regex("""([۰-۹٠-٩0-9][۰-۹٠-٩0-9,٬٫]*(?:[.٫][0-9]+)?)\s*(?:تومان|ت)""")
+            .find(plain)?.groupValues?.get(1)?.let(::number)
+
+        val change = Regex("""(?is)قیمت امروز.{0,100}?به (?:تومان|دلار):\s*([+−-]?[۰-۹٠-٩0-9]+(?:[.٫][۰-۹٠-٩0-9]+)?)\s*%""")
+            .find(plain)?.groupValues?.get(1)?.let(::number)
+            ?: Regex("""([+−-]?[۰-۹٠-٩0-9]+(?:[.٫][۰-۹٠-٩0-9]+)?)\s*%""")
                 .find(plain)?.groupValues?.get(1)?.let(::number)
 
         val validUsd = usd?.takeIf { it.isFinite() && it > 0.0 }
