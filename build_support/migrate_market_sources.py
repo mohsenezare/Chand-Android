@@ -104,7 +104,7 @@ activity_file.write_text(activity_text)
 gradle_file = Path("source/app/build.gradle.kts")
 if gradle_file.exists():
     gradle_text = gradle_file.read_text()
-    gradle_text = re.sub(r"versionCode\s*=\s*\\d+", "versionCode = 412", gradle_text, count=1)
+    gradle_text = re.sub(r"versionCode\s*=\s*\d+", "versionCode = 412", gradle_text, count=1)
     gradle_text = re.sub(r'versionName\s*=\s*"[^"]+"', 'versionName = "4.12.0"', gradle_text, count=1)
     gradle_file.write_text(gradle_text)
 
