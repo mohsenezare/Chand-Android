@@ -3,6 +3,10 @@ name: Build Chand APK
 permissions:
   contents: write
 
+concurrency:
+  group: chand-v4-12-${{ github.ref }}
+  cancel-in-progress: true
+
 on:
   push:
     branches: [ main, chand-4.12-arzdigital-migration ]
@@ -182,6 +186,7 @@ jobs:
           if-no-files-found: error
 
       - name: Publish APK in repository
+        if: github.event_name == 'push'
         shell: bash
         run: |
           set -euxo pipefail
@@ -209,6 +214,8 @@ jobs:
           git add -f release/v4.12/source release/v4.12/BUILD_REPORT.md
           if ! git diff --cached --quiet; then
             git commit -m "Publish Chand v4.12 source, APK and test report [skip ci]"
+            git fetch origin "$GITHUB_REF_NAME"
+            git pull --rebase origin "$GITHUB_REF_NAME"
             git -c http.extraheader="AUTHORIZATION: basic $(printf "x-access-token:%s" "$GITHUB_TOKEN" | base64 -w0)" push origin HEAD:"$GITHUB_REF_NAME"
           fi
 
