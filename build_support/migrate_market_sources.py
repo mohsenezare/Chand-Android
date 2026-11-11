@@ -43,3 +43,59 @@ repo_text = repo_text.replace(
                     }?.takeIf { it.isFinite() && it > 0.0 }'''
 )
 repo_file.write_text(repo_text)
+
+# v4.0 payload compatibility: replace the detached Investing catalogue body left by
+# the old expression-bodied function with a real ArzDigital public-page catalogue.
+repo_text = repo_file.read_text()
+start_marker = '    ): List<MarketDescriptor> = withContext(Dispatchers.IO) {\\n        val seeds = ('
+start = repo_text.find(start_marker)
+end = repo_text.find('    private suspend fun loadTsetmcCatalog(', start)
+if start >= 0 and end > start:
+    global_catalog = '''    suspend fun refreshGlobalArzDigitalCatalogStrict(
+        onProgress: (Int) -> Unit = {}
+    ): List<MarketDescriptor> = withContext(Dispatchers.IO) {
+        onProgress(15)
+        val entries = arzDigitalClient.searchCatalog("", 160)
+        val remote = entries.map { entry ->
+            MarketDescriptor(
+                id = "arz:" + entry.slug, sourceKey = entry.slug, name = entry.title,
+                code = entry.code.ifBlank { entry.slug.take(12).uppercase(Locale.US) },
+                symbol = "ASSET", source = MarketSource.ARZDIGITAL,
+                category = "بازار جهانی", unit = "دلار", valueScale = 1.0
+            )
+        }
+        val items = (ARZDIGITAL_MARKET_DESCRIPTORS + remote).distinctBy(MarketDescriptor::id)
+        require(items.isNotEmpty()) { "ArzDigital public catalogue is empty" }
+        onProgress(100)
+        synchronized(knownDescriptors) { items.forEach { knownDescriptors[it.id] = it } }
+        items
+    }
+
+'''
+    repo_text = repo_text[:start] + global_catalog + repo_text[end:]
+repo_text = repo_text.replace('\\n/0/0/0/0/$name"\\n', '\\n')
+repo_file.write_text(repo_text)
+
+# The v4.0 base has no repository-side TSETMC tick applier; use the repository's
+# 5-second HTTP refresh loop for TSETMC and ArzDigital rather than calling a missing method.
+vm_file = Path("source/app/src/main/java/ir/personal/chand/MainViewModel.kt")
+vm_text = vm_file.read_text()
+vm_text = re.sub(
+    r"    private fun startProviderStreams\\(\\) \\{.*?\\n    \\}",
+    "    private fun startProviderStreams() { /* MarketRepository refreshes ArzDigital and TSETMC over HTTP. */ }",
+    vm_text,
+    count=1,
+    flags=re.S
+)
+vm_file.write_text(vm_text)
+
+# MainActivity needs the MarketSource enum import for the two-source freshness/logo switches.
+activity_file = Path("source/app/src/main/java/ir/personal/chand/MainActivity.kt")
+activity_text = activity_file.read_text()
+if "import ir.personal.chand.data.MarketSource" not in activity_text:
+    activity_text = activity_text.replace(
+        "package ir.personal.chand\\n",
+        "package ir.personal.chand\\n\\nimport ir.personal.chand.data.MarketSource\\n",
+        1
+    )
+activity_file.write_text(activity_text)
