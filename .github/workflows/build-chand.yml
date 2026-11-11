@@ -124,6 +124,7 @@ jobs:
         run: |
           set -euxo pipefail
           python3 build_support/migrate_market_sources.py
+          python3 build_support/repair_kotlin_tests.py
           echo "=== Legacy provider scan ==="
           if grep -RniE 'TGJU|Investing|TradingView' source/app/src/main/java/ir/personal/chand --include='*.kt'; then
             echo "Legacy provider reference remains in production Kotlin source"
