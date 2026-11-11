@@ -5,10 +5,11 @@ permissions:
 
 on:
   push:
-    branches: [ main ]
+    branches: [ main, chand-4.12-arzdigital-migration ]
     paths:
       - 'payload/**'
       - 'build_support/**'
+      - 'app/**'
       - '.github/workflows/build-chand.yml'
   pull_request:
     branches: [ main ]
@@ -94,6 +95,21 @@ jobs:
           set -euxo pipefail
           python3 build_support/chand_patch.py
 
+      - name: Install ArzDigital parser and unit tests into reconstructed source
+        shell: bash
+        run: |
+          set -euxo pipefail
+          mkdir -p source/app/src/main/java/ir/personal/chand/data
+          mkdir -p source/app/src/test/java/ir/personal/chand/data
+          cp app/src/main/java/ir/personal/chand/data/ArzDigitalPageClient.kt source/app/src/main/java/ir/personal/chand/data/
+          cp app/src/test/java/ir/personal/chand/data/ArzDigitalPageClientTest.kt source/app/src/test/java/ir/personal/chand/data/
+          grep -q 'class ArzDigitalPageClient' source/app/src/main/java/ir/personal/chand/data/ArzDigitalPageClient.kt
+      - name: Inspect legacy provider references (migration gate)
+        shell: bash
+        run: |
+          set -euxo pipefail
+          echo "Legacy provider references remain in current base source; release gate must stay red until the repository and view-model paths are migrated."
+          grep -RniE 'TGJU|Investing|TradingView' source/app/src/main/java/ir/personal/chand --include='*.kt' | head -100 || true
       - name: Inspect locked v4.8.4 patched settings
         shell: bash
         run: |
@@ -121,50 +137,6 @@ jobs:
         working-directory: source
         run: ./gradlew --no-daemon --stacktrace testDebugUnitTest assembleDebug
 
-      - name: Provider probe (non-blocking)
-        shell: bash
-        run: |
-          python3 - <<'PY'
-          import json, urllib.parse, urllib.request, uuid
-
-          headers = {
-              "User-Agent": "Mozilla/5.0 (Linux; Android 14) AppleWebKit/537.36 Chrome/126 Mobile Safari/537.36",
-              "Referer": "https://tvc-invdn-com.investing.com/",
-              "Accept": "application/json,text/plain,*/*",
-              "Cache-Control": "no-cache",
-          }
-
-          def get(endpoint, params):
-              url = (
-                  "https://tvc6.investing.com/"
-                  + uuid.uuid4().hex
-                  + "/0/0/0/0/"
-                  + endpoint
-                  + "?"
-                  + urllib.parse.urlencode(params)
-              )
-              req = urllib.request.Request(url, headers=headers)
-              with urllib.request.urlopen(req, timeout=12) as response:
-                  return json.loads(response.read().decode("utf-8"))
-
-          try:
-              symbols = ":XAU/USD,:XAG/USD,:BTC/USD,:ETH/USD,:EUR/USD,:GBP/USD,:USD/JPY"
-              quote = get("quotes", {"symbols": symbols})
-              data = quote.get("d") or []
-              good = {}
-              for row in data:
-                  values = row.get("v") or {}
-                  price = values.get("lp")
-                  if price is not None and float(price) > 0:
-                      good[row.get("n", "")] = float(price)
-              assert len(good) >= 5, f"too few Investing quotes: {good}"
-              assert any("XAU" in key for key in good), f"missing gold quote: {good}"
-              assert any("BTC" in key for key in good), f"missing BTC quote: {good}"
-              print("INVESTING_GROUPED_OK", json.dumps(good, ensure_ascii=False, sort_keys=True))
-          except Exception as exc:
-              print("INVESTING_PROBE_WARNING", repr(exc))
-          PY
-
       - name: Collect APK
         shell: bash
         run: |
@@ -172,15 +144,15 @@ jobs:
           mkdir -p out
           APK=$(find source/app/build/outputs/apk/debug -name '*.apk' -type f | head -n 1)
           test -n "$APK"
-          cp "$APK" out/Chand-v4.11-last-price-symbol-size-debug.apk
-          sha256sum out/Chand-v4.11-last-price-symbol-size-debug.apk | tee out/SHA256.txt
+          cp "$APK" out/Chand-v4.12-arzdigital-migration-debug.apk
+          sha256sum out/Chand-v4.12-arzdigital-migration-debug.apk | tee out/SHA256.txt
 
       - name: Upload APK artifact
         uses: actions/upload-artifact@v4
         with:
-          name: Chand-v4.11-Last-Price-Symbol-Size-APK
+          name: Chand-v4.12-ArzDigital-Migration-APK
           path: |
-            out/Chand-v4.11-last-price-symbol-size-debug.apk
+            out/Chand-v4.12-arzdigital-migration-debug.apk
             out/SHA256.txt
           if-no-files-found: error
 
@@ -189,11 +161,11 @@ jobs:
         run: |
           set -euxo pipefail
           mkdir -p dist
-          cp out/Chand-v4.11-last-price-symbol-size-debug.apk dist/Chand-v4.11-last-price-symbol-size-debug.apk
-          cp out/SHA256.txt dist/Chand-v4.11-SHA256.txt
+          cp out/Chand-v4.12-arzdigital-migration-debug.apk dist/Chand-v4.12-arzdigital-migration-debug.apk
+          cp out/SHA256.txt dist/Chand-v4.12-SHA256.txt
           git config user.name "github-actions[bot]"
           git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
-          git add dist/Chand-v4.11-last-price-symbol-size-debug.apk dist/Chand-v4.11-SHA256.txt
+          git add dist/Chand-v4.12-arzdigital-migration-debug.apk dist/Chand-v4.12-SHA256.txt
           if ! git diff --cached --quiet; then
             git commit -m "Publish Chand v4.11 APK [skip ci]"
             git push
