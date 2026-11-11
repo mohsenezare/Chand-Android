@@ -65,10 +65,21 @@ internal class ArzDigitalPageClient(
 
     internal fun parse(slug: String, html: String): Quote {
         if (html.length < 2_000) throw IOException("ArzDigital page is too short")
+        val heading = Regex("""(?is)<h1[^>]*>(.*?)</h1>""")
+            .find(html)?.groupValues?.get(1)?.let(::clean).orEmpty()
         val plain = clean(html
             .replace(Regex("""(?is)<script\b[^>]*>.*?</script>"""), " ")
             .replace(Regex("""(?is)<style\b[^>]*>.*?</style>"""), " "))
         val identity = slug.replace('-', ' ')
+        val headingIndex = heading.takeIf { it.isNotBlank() }?.let { plain.indexOf(it, ignoreCase = true) } ?: -1
+        val assetSegment = if (headingIndex >= 0) plain.substring(headingIndex).take(900) else plain
+        // Coin/derivative pages place the primary quote directly after the H1:
+        // percentage change, USD price, then the equivalent toman amount.
+        val coinQuote = Regex("""([+−-]?[۰-۹٠-٩0-9]+(?:[.٫][۰-۹٠-٩0-9]+)?)\s*%\s*\$\s*([0-9][0-9,]*(?:\.[0-9]+)?)\s+([۰-۹٠-٩0-9][۰-۹٠-٩0-9,٬٫]*)""")
+            .find(assetSegment)
+        val coinChange = coinQuote?.groupValues?.get(1)?.let(::number)
+        val coinUsd = coinQuote?.groupValues?.get(2)?.let(::number)
+        val coinToman = coinQuote?.groupValues?.get(3)?.let(::number)
         if (!plain.contains(identity, true) && !plain.contains("قیمت امروز", true) &&
             !plain.contains("قیمت لحظه", true)) {
             throw IOException("ArzDigital asset identity could not be verified: $slug")
@@ -76,15 +87,15 @@ internal class ArzDigitalPageClient(
 
         val usdLabeled = Regex("""(?is)قیمت امروز.{0,100}?به دلار:\s*[+−-]?[۰-۹0-9.,]+\s*%\s*\$\s*([0-9][0-9,]*(?:\.[0-9]+)?)""")
             .find(plain)?.groupValues?.get(1)?.let(::number)
-        val usd = usdLabeled ?: Regex("""\$\s*([0-9][0-9,]*(?:\.[0-9]+)?)""")
+        val usd = coinUsd ?: usdLabeled ?: Regex("""\$\s*([0-9][0-9,]*(?:\.[0-9]+)?)""")
             .find(plain)?.groupValues?.get(1)?.let(::number)
 
         val tomanLabeled = Regex("""(?is)قیمت امروز.{0,100}?به تومان:\s*[+−-]?[۰-۹0-9.,]+\s*%\s*([۰-۹٠-٩0-9,٬٫]+)(?:\s*(?:تومان|ت))?""")
             .find(plain)?.groupValues?.get(1)?.let(::number)
-        val toman = tomanLabeled ?: Regex("""([۰-۹٠-٩0-9][۰-۹٠-٩0-9,٬٫]*(?:[.٫][0-9]+)?)\s*(?:تومان|ت)""")
+        val toman = coinToman ?: tomanLabeled ?: Regex("""([۰-۹٠-٩0-9][۰-۹٠-٩0-9,٬٫]*(?:[.٫][0-9]+)?)\s*(?:تومان|ت)""")
             .find(plain)?.groupValues?.get(1)?.let(::number)
 
-        val change = Regex("""(?is)قیمت امروز.{0,100}?به تومان:\s*([+−-]?[۰-۹٠-٩0-9]+(?:[.٫][۰-۹٠-٩0-9]+)?)\s*%""")
+        val change = coinChange ?: Regex("""(?is)قیمت امروز.{0,100}?به تومان:\s*([+−-]?[۰-۹٠-٩0-9]+(?:[.٫][۰-۹٠-٩0-9]+)?)\s*%""")
             .find(plain)?.groupValues?.get(1)?.let(::number)
             ?: Regex("""(?is)قیمت امروز.{0,100}?به دلار:\s*([+−-]?[۰-۹٠-٩0-9]+(?:[.٫][۰-۹٠-٩0-9]+)?)\s*%""")
                 .find(plain)?.groupValues?.get(1)?.let(::number)
