@@ -16,7 +16,7 @@ repo_file.write_text(repo_text)
 # TSETMC-listed Iranian gold funds stay on TSETMC, not on a non-existent ArzDigital coin page.
 models_file = Path("source/app/src/main/java/ir/personal/chand/data/MarketModels.kt")
 models_text = models_file.read_text()
-ayar = re.search(r'MarketDescriptor\\(\\s*id = "ayar".*?\\n\\s*\\)', models_text, re.S)
+ayar = re.search(r'MarketDescriptor\(\\s*id = "ayar".*?\n\\s*\)', models_text, re.S)
 if ayar:
     block = ayar.group(0)
     block = block.replace('sourceKey = "gc3"', 'sourceKey = "عیار"')
@@ -47,7 +47,7 @@ repo_file.write_text(repo_text)
 # v4.0 payload compatibility: replace the detached Investing catalogue body left by
 # the old expression-bodied function with a real ArzDigital public-page catalogue.
 repo_text = repo_file.read_text()
-start_marker = '    ): List<MarketDescriptor> = withContext(Dispatchers.IO) {\\n        val seeds = ('
+start_marker = '    ): List<MarketDescriptor> = withContext(Dispatchers.IO) {\n        val seeds = ('
 start = repo_text.find(start_marker)
 end = repo_text.find('    private suspend fun loadTsetmcCatalog(', start)
 if start >= 0 and end > start:
@@ -73,7 +73,7 @@ if start >= 0 and end > start:
 
 '''
     repo_text = repo_text[:start] + global_catalog + repo_text[end:]
-repo_text = repo_text.replace('\\n/0/0/0/0/$name"\\n', '\\n')
+repo_text = repo_text.replace('\n/0/0/0/0/$name"\n', '\n')
 repo_file.write_text(repo_text)
 
 # The v4.0 base has no repository-side TSETMC tick applier; use the repository's
@@ -81,7 +81,7 @@ repo_file.write_text(repo_text)
 vm_file = Path("source/app/src/main/java/ir/personal/chand/MainViewModel.kt")
 vm_text = vm_file.read_text()
 vm_text = re.sub(
-    r"    private fun startProviderStreams\\(\\) \\{.*?\\n    \\}",
+    r"    private fun startProviderStreams\(\) \{.*?\n    \}",
     "    private fun startProviderStreams() { /* MarketRepository refreshes ArzDigital and TSETMC over HTTP. */ }",
     vm_text,
     count=1,
@@ -94,8 +94,8 @@ activity_file = Path("source/app/src/main/java/ir/personal/chand/MainActivity.kt
 activity_text = activity_file.read_text()
 if "import ir.personal.chand.data.MarketSource" not in activity_text:
     activity_text = activity_text.replace(
-        "package ir.personal.chand\\n",
-        "package ir.personal.chand\\n\\nimport ir.personal.chand.data.MarketSource\\n",
+        "package ir.personal.chand\n",
+        "package ir.personal.chand\n\nimport ir.personal.chand.data.MarketSource\n",
         1
     )
 activity_file.write_text(activity_text)
