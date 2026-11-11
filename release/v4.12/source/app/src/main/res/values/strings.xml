@@ -1,0 +1,16 @@
+<resources>
+    <string name="app_name">Chand?!</string>
+    <string name="widget_name">Chand — تک‌قیمت</string>
+    <string name="triple_widget_name">Chand — سه‌قیمت</string>
+    <string name="widget_preview_symbol" translatable="false">🇺🇸</string>
+    <string name="widget_preview_code" translatable="false">USD</string>
+    <string name="widget_preview_change" translatable="false">↑5.9K</string>
+    <string name="widget_preview_price" translatable="false">212,200</string>
+    <string name="widget_preview_row_1" translatable="false">🇺🇸  USD   212,200   ↑5.9K</string>
+    <string name="widget_preview_row_2" translatable="false">🇪🇺  EUR   246,400   ↑7.4K</string>
+    <string name="widget_preview_row_3" translatable="false">🟡  GRAM   22.323M   ↑558.66K</string>
+    <string name="wide_widget_name">Chand — کارت عریض</string>
+    <string name="grid_widget_name">Chand — پنل چهارتایی</string>
+    <string name="widget_preview_name" translatable="false">US Dollar</string>
+    <string name="widget_market_title">Chand?! • Market</string>
+</resources>

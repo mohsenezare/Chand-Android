@@ -1,0 +1,2 @@
+Chand v4.0 — TSETMC + TGJU + TradingView live architecture
+versionCode=18

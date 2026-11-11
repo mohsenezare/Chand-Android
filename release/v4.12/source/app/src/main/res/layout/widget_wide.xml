@@ -1,0 +1,78 @@
+<?xml version="1.0" encoding="utf-8"?>
+<LinearLayout xmlns:android="http://schemas.android.com/apk/res/android"
+    android:id="@+id/wide_root"
+    android:layout_width="match_parent"
+    android:layout_height="match_parent"
+    android:background="@drawable/widget_background"
+    android:gravity="center_vertical"
+    android:orientation="horizontal"
+    android:padding="16dp">
+
+    <TextView
+        android:id="@+id/wide_symbol"
+        android:layout_width="56dp"
+        android:layout_height="56dp"
+        android:background="@drawable/widget_chip_background"
+        android:gravity="center"
+        android:text="@string/widget_preview_symbol"
+        android:textSize="28sp" />
+
+    <LinearLayout
+        android:layout_width="0dp"
+        android:layout_height="wrap_content"
+        android:layout_marginStart="13dp"
+        android:layout_weight="1"
+        android:orientation="vertical">
+
+        <TextView
+            android:id="@+id/wide_name"
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:ellipsize="end"
+            android:fontFamily="sans-serif-medium"
+            android:maxLines="1"
+            android:text="@string/widget_preview_name"
+            android:textColor="@color/widget_text"
+            android:textSize="16sp" />
+
+        <TextView
+            android:id="@+id/wide_code"
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:layout_marginTop="2dp"
+            android:fontFamily="sans-serif"
+            android:maxLines="1"
+            android:text="@string/widget_preview_code"
+            android:textColor="@color/widget_muted"
+            android:textSize="11sp" />
+    </LinearLayout>
+
+    <LinearLayout
+        android:layout_width="wrap_content"
+        android:layout_height="wrap_content"
+        android:gravity="end"
+        android:orientation="vertical">
+
+        <TextView
+            android:id="@+id/wide_price"
+            android:layout_width="wrap_content"
+            android:layout_height="wrap_content"
+            android:fontFamily="sans-serif-black"
+            android:gravity="end"
+            android:maxLines="1"
+            android:text="@string/widget_preview_price"
+            android:textColor="@color/widget_text"
+            android:textSize="27sp" />
+
+        <TextView
+            android:id="@+id/wide_change"
+            android:layout_width="wrap_content"
+            android:layout_height="wrap_content"
+            android:layout_marginTop="1dp"
+            android:fontFamily="sans-serif-medium"
+            android:gravity="end"
+            android:text="@string/widget_preview_change"
+            android:textColor="@color/widget_up"
+            android:textSize="12sp" />
+    </LinearLayout>
+</LinearLayout>
