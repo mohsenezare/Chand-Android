@@ -142,7 +142,7 @@ if parser_tests.exists():
     test_lines = [line for line in test_text.splitlines() if line.strip() != "@Test"]
     normalized_lines = []
     for line in test_lines:
-        if re.match(r"^\\s*fun\\s+", line):
+        if re.match(r"^\s*fun\s+", line):
             normalized_lines.append("    @Test")
         normalized_lines.append(line)
-    parser_tests.write_text("\\n".join(normalized_lines) + "\\n")
+    parser_tests.write_text("\n".join(normalized_lines) + "\n")
