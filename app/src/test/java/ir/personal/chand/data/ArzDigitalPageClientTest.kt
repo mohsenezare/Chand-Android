@@ -10,7 +10,7 @@ class ArzDigitalPageClientTest {
     @Test fun parsesBrentPublicPagePriceAndChange() {
         val html = """
             <html><head><title>Brent Oil (Derivatives) - ارزدیجیتال</title></head>
-            <body><h1>قیمت لحظه ای Brent Oil (Derivatives)</h1>
+            <body><div>BNB $712.13</div><h1>قیمت لحظه ای Brent Oil (Derivatives)</h1>
             <div>3.79%</div><div>$76.04</div><div>۱۳,۷۴۸,۲۶۶ ت</div>
             <div>${"market quote content ".repeat(140)}</div></body></html>
         """.trimIndent()
