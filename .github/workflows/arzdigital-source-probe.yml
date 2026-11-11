@@ -1,0 +1,24 @@
+name: ArzDigital public-page smoke test
+
+on:
+  push:
+    branches: [chand-4.12-arzdigital-migration]
+    paths:
+      - 'build_support/arzdigital_page_probe.py'
+      - '.github/workflows/arzdigital-source-probe.yml'
+      - 'docs/ARZDIGITAL_MIGRATION.md'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  probe:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - name: Probe official public pages
+        run: python build_support/arzdigital_page_probe.py
