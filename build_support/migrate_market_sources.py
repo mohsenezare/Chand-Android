@@ -12,3 +12,34 @@ if start >= 0:
         raise SystemExit("Could not safely locate end of obsolete HTTP POST helper")
     repo_text = repo_text[:start] + repo_text[end:]
 repo_file.write_text(repo_text)
+
+# TSETMC-listed Iranian gold funds stay on TSETMC, not on a non-existent ArzDigital coin page.
+models_file = Path("source/app/src/main/java/ir/personal/chand/data/MarketModels.kt")
+models_text = models_file.read_text()
+ayar = re.search(r'MarketDescriptor\\(\\s*id = "ayar".*?\\n\\s*\\)', models_text, re.S)
+if ayar:
+    block = ayar.group(0)
+    block = block.replace('sourceKey = "gc3"', 'sourceKey = "عیار"')
+    block = block.replace('name = "عیار"', 'name = "عیار"')
+    block = block.replace('code = "AYAR"', 'code = "عیار"')
+    block = block.replace('symbol = "Au"', 'symbol = "TSE"')
+    block = block.replace('source = MarketSource.ARZDIGITAL', 'source = MarketSource.TSETMC')
+    block = block.replace('category = "صندوق طلا"', 'category = "بورس ایران · صندوق طلا"')
+    models_text = models_text[:ayar.start()] + block + models_text[ayar.end():]
+    models_file.write_text(models_text)
+
+# ArzDigital reports JPY as USD per one yen; invert only the USD/JPY display quote.
+repo_text = repo_file.read_text()
+repo_text = repo_text.replace(
+    '''val price = when (descriptor.unit) {
+                        "تومان", "ریال" -> quote.priceToman
+                        else -> quote.priceUsd
+                    }?.takeIf { it.isFinite() && it > 0.0 }''',
+    '''val price = when {
+                        descriptor.code.equals("USD/JPY", ignoreCase = true) ->
+                            quote.priceUsd?.takeIf { it > 0.0 }?.let { 1.0 / it }
+                        descriptor.unit == "تومان" || descriptor.unit == "ریال" -> quote.priceToman
+                        else -> quote.priceUsd
+                    }?.takeIf { it.isFinite() && it > 0.0 }'''
+)
+repo_file.write_text(repo_text)
